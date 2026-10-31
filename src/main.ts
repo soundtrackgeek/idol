@@ -2,7 +2,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { join, basename } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { SplatViewer } from "./viewer";
 
@@ -31,6 +31,7 @@ interface Result {
   num_gaussians: number;
   vram_peak_gb?: number;
   created: number;
+  exports?: { format: string; path: string }[];
 }
 
 interface LibraryImage {
@@ -45,7 +46,9 @@ type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
 interface Job {
   id: string;
-  kind: "generate" | "preprocess";
+  kind: "generate" | "preprocess" | "export";
+  /** For export jobs. */
+  export?: { ply: string; format: string; out_path: string | null; options: ExportOptions };
   imageId: string;
   imageName: string;
   params: GenParams;
@@ -56,6 +59,19 @@ interface Job {
   message: string;
   started?: number;
 }
+
+interface ExportOptions {
+  resolution: number;
+  threshold: number;
+  smooth: number;
+  faces: number;
+  height: number | null;
+}
+
+const MESH_FORMATS = ["glb", "obj", "stl", "mesh-ply"];
+const EXPORT_SUFFIX: Record<string, string> = {
+  ply: "_splat.ply", spz: ".spz", splat: ".splat", points: "_points.ply", glb: ".glb", obj: ".obj", stl: ".stl", "mesh-ply": "_mesh.ply",
+};
 
 interface Settings {
   python_path: string;
@@ -130,6 +146,8 @@ const pendingRequests = new Map<string, (event: WorkerEvent) => boolean>();
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const viewer = new SplatViewer($("viewer-host"));
+// Dev builds only: lets test scripts drive the viewer over the WebView2 debugging port.
+if (import.meta.env.DEV) (window as any).__idolViewer = viewer;
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -255,6 +273,9 @@ function onWorkerEvent(event: WorkerEvent) {
       if (job) finishGenerate(job, event);
       else adoptResult(event);
       break;
+    case "exported":
+      if (job) finishExport(job, event);
+      break;
     case "preprocessed":
       if (job) finishPreprocess(job, event);
       break;
@@ -306,6 +327,25 @@ async function finishGenerate(job: Job, event: WorkerEvent) {
     showResult(result);
   } else {
     renderLibrary();
+  }
+}
+
+async function finishExport(job: Job, event: WorkerEvent) {
+  await invoke("library_add_export", { ply: event.ply, format: event.format, path: event.path }).catch((e) => log(`[library] ${e}`));
+  library = await invoke<LibraryImage[]>("library_load");
+  const mb = (event.bytes / 2 ** 20).toFixed(1);
+  const mesh = event.faces ? ` · ${fmt(event.faces)} triangles` : "";
+  log(`[export] ${event.format}: ${event.path} (${mb} MB${mesh}, ${event.seconds}s)`);
+  endJob(job, "done", `${mb} MB${mesh} · ${event.path}`);
+  toast(`Exported .${event.format}: ${event.path}`);
+  const result = selectedResult();
+  if (result && result.ply.toLowerCase() === String(event.ply).toLowerCase()) {
+    renderResults();
+    fillShowMenu(result);
+    if (event.format === "glb") {
+      ($("vt-show") as HTMLSelectElement).value = event.path;
+      showResult(result, event.path);
+    }
   }
 }
 
@@ -364,7 +404,10 @@ async function pump() {
   setWorkerState(needsLoad ? "loading" : "busy", gpuLabel);
   try {
     const common = { id: job.id, image: image.path, mode: job.params.mode, crop_margin: job.params.crop_margin, ...pipelineConfig() };
-    if (job.kind === "preprocess") {
+    if (job.kind === "export" && job.export) {
+      const e = job.export;
+      await send({ cmd: "export", id: job.id, ply: e.ply, format: e.format, out_path: e.out_path, ...e.options });
+    } else if (job.kind === "preprocess") {
       const out = await join(info.output_dir, ".previews", `${image.id}_${job.params.mode}_${job.params.crop_margin ?? "auto"}.png`);
       await send({ cmd: "preprocess", ...common, out_path: out });
     } else {
@@ -442,7 +485,12 @@ function renderQueueItem(job: Job) {
   if (!li) return;
   const pct = job.status === "done" ? 100 : job.total ? Math.round((job.step / job.total) * 100) : 0;
   const p = job.params;
-  const what = job.kind === "preprocess" ? "Preview crop" : `seed ${p.seed} · ${fmt(p.num_gaussians)} · ${p.steps} steps · ${p.mode}`;
+  const what =
+    job.kind === "export"
+      ? `Export .${job.export?.format} · seed ${p.seed}`
+      : job.kind === "preprocess"
+        ? "Preview crop"
+        : `seed ${p.seed} · ${fmt(p.num_gaussians)} · ${p.steps} steps · ${p.mode}`;
   li.className = "job " + job.status;
   li.innerHTML = `
     <div class="job-main">
@@ -553,7 +601,8 @@ function renderResults() {
       <img src="${fileUrl(result.preprocessed)}" alt="" loading="lazy" />
       <span><b>seed ${p.seed}</b> · ${p.mode}</span>
       <span class="muted">${fmt(result.num_gaussians)} · ${p.steps} st · cfg ${p.cfg_strength}</span>
-      <span class="muted">${result.seconds}s${result.vram_peak_gb ? ` · ${result.vram_peak_gb} GB` : ""}</span>`;
+      <span class="muted">${result.seconds}s${result.vram_peak_gb ? ` · ${result.vram_peak_gb} GB` : ""}</span>
+      ${result.exports?.length ? `<span>${[...new Set(result.exports.map((e) => e.format))].map((f) => `<span class="export-chip">${escapeHtml(f)}</span>`).join("")}</span>` : ""}`;
     card.addEventListener("click", () => {
       selectedResultId = result.id;
       renderResults();
@@ -562,7 +611,7 @@ function renderResults() {
     strip.appendChild(card);
   }
   const has = !!selectedResult();
-  for (const id of ["btn-open-ply", "btn-reveal", "btn-use-params", "btn-delete-result"]) $<HTMLButtonElement>(id).disabled = !has;
+  for (const id of ["btn-open-ply", "btn-reveal", "btn-export", "btn-use-params", "btn-delete-result"]) $<HTMLButtonElement>(id).disabled = !has;
 }
 
 const selectedResult = () => selectedImage()?.results.find((r) => r.id === selectedResultId);
@@ -580,8 +629,19 @@ function showPreprocessed(path?: string) {
   }
 }
 
-async function showResult(result: Result) {
+/** The viewer's "show" menu: the splat, plus any exported .glb meshes of this result. */
+function fillShowMenu(result: Result | undefined) {
+  const select = $<HTMLSelectElement>("vt-show");
+  const current = select.value;
+  const meshes = (result?.exports ?? []).filter((e) => e.format === "glb");
+  select.innerHTML = `<option value="">Splat</option>` + meshes.map((m) => `<option value="${escapeHtml(m.path)}">Mesh (.glb)${meshes.length > 1 ? " " + escapeHtml(m.path.split(/[\\/]/).pop()!) : ""}</option>`).join("");
+  select.value = meshes.some((m) => m.path === current) ? current : "";
+  select.classList.toggle("hidden", meshes.length === 0);
+}
+
+async function showResult(result: Result, meshPath = "") {
   showPreprocessed(result.preprocessed);
+  if (!meshPath) fillShowMenu(result);
   $("viewer-empty").classList.add("hidden");
   $("viewer-loading").classList.remove("hidden");
   $("viewer-stats").textContent = "";
@@ -590,6 +650,13 @@ async function showResult(result: Result) {
     try {
       cam = JSON.parse(await invoke<string>("read_text_file", { path: result.camera_path }));
     } catch {}
+    if (meshPath) {
+      const meshBytes = await invoke<ArrayBuffer>("read_file_bytes", { path: meshPath });
+      const triangles = await viewer.loadMesh(meshBytes, cam);
+      if (triangles === null) return;
+      $("viewer-stats").textContent = `Mesh preview · ${fmt(triangles)} triangles · ${(meshBytes.byteLength / 2 ** 20).toFixed(1)} MB`;
+      return;
+    }
     const bytes = await invoke<ArrayBuffer>("read_file_bytes", { path: result.ply });
     const count = await viewer.load(bytes, cam);
     if (count === null) return;
@@ -760,6 +827,11 @@ function bindChrome() {
 
   $("btn-open-ply").addEventListener("click", () => selectedResult() && openPath(selectedResult()!.ply).catch((e) => toast(String(e), true)));
   $("btn-reveal").addEventListener("click", () => selectedResult() && revealItemInDir(selectedResult()!.ply));
+  bindExport();
+  $("vt-show").addEventListener("change", () => {
+    const result = selectedResult();
+    if (result) showResult(result, $<HTMLSelectElement>("vt-show").value);
+  });
   $("btn-use-params").addEventListener("click", () => {
     const result = selectedResult();
     if (!result) return;
@@ -788,6 +860,80 @@ function bindChrome() {
   $("btn-cancel-all").addEventListener("click", () => jobs.forEach((j) => cancelJob(j)));
   $("btn-unload").addEventListener("click", () => workerState !== "stopped" && send({ cmd: "unload" }));
   $("btn-stop-worker").addEventListener("click", stopWorker);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Export
+
+const EXPORT_OPTIONS_KEY = "idol-studio.export.v1";
+
+function bindExport() {
+  const dialog = $<HTMLDialogElement>("export-dialog");
+  const saved = loadJson<{ format: string; options: ExportOptions; saveAs: boolean }>(EXPORT_OPTIONS_KEY, {
+    format: "spz",
+    options: { resolution: 256, threshold: 0.5, smooth: 10, faces: 200000, height: null },
+    saveAs: false,
+  });
+  const formatInputs = () => [...dialog.querySelectorAll<HTMLInputElement>('input[name="export-format"]')];
+  const format = () => formatInputs().find((i) => i.checked)?.value ?? "spz";
+  const syncMesh = () => $("mesh-options").classList.toggle("hidden", !MESH_FORMATS.includes(format()));
+  const syncOutputs = () => {
+    $("out-threshold").textContent = Number($<HTMLInputElement>("ex-threshold").value).toFixed(2);
+    $("out-smooth").textContent = $<HTMLInputElement>("ex-smooth").value;
+  };
+  formatInputs().forEach((i) => i.addEventListener("change", syncMesh));
+  ["ex-threshold", "ex-smooth"].forEach((id) => $(id).addEventListener("input", syncOutputs));
+
+  $("btn-export").addEventListener("click", () => {
+    const result = selectedResult();
+    if (!result) return;
+    formatInputs().forEach((i) => (i.checked = i.value === saved.format));
+    $<HTMLSelectElement>("ex-resolution").value = String(saved.options.resolution);
+    $<HTMLSelectElement>("ex-faces").value = String(saved.options.faces);
+    $<HTMLInputElement>("ex-threshold").value = String(saved.options.threshold);
+    $<HTMLInputElement>("ex-smooth").value = String(saved.options.smooth);
+    $<HTMLInputElement>("ex-height").value = saved.options.height ? String(saved.options.height) : "";
+    $<HTMLInputElement>("ex-saveas").checked = saved.saveAs;
+    $("export-source").textContent = result.ply;
+    syncMesh();
+    syncOutputs();
+    dialog.showModal();
+  });
+
+  $("btn-export-go").addEventListener("click", async () => {
+    const result = selectedResult();
+    const image = selectedImage();
+    if (!result || !image) return;
+    const height = Number($<HTMLInputElement>("ex-height").value);
+    const options: ExportOptions = {
+      resolution: Number($<HTMLSelectElement>("ex-resolution").value),
+      threshold: Number($<HTMLInputElement>("ex-threshold").value),
+      smooth: Number($<HTMLInputElement>("ex-smooth").value),
+      faces: Number($<HTMLSelectElement>("ex-faces").value),
+      height: height > 0 ? height : null,
+    };
+    const fmtName = format();
+    const saveAs = $<HTMLInputElement>("ex-saveas").checked;
+    localStorage.setItem(EXPORT_OPTIONS_KEY, JSON.stringify({ format: fmtName, options, saveAs }));
+    Object.assign(saved, { format: fmtName, options, saveAs });
+    const defaultPath = result.ply.replace(/\.ply$/i, "") + EXPORT_SUFFIX[fmtName];
+    let outPath: string | null = null;
+    if (saveAs) {
+      const ext = EXPORT_SUFFIX[fmtName].split(".").pop()!;
+      const picked = await saveDialog({ defaultPath, filters: [{ name: `.${ext}`, extensions: [ext] }] });
+      if (!picked) return;
+      outPath = picked;
+    }
+    dialog.close();
+    jobs.push({
+      id: "j-" + uid(), kind: "export", imageId: image.id, imageName: image.name, params: result.params,
+      status: "queued", stage: "", step: 0, total: 0, message: "Queued",
+      export: { ply: result.ply, format: fmtName, out_path: outPath, options },
+    });
+    renderQueue();
+    switchDock("queue");
+    pump();
+  });
 }
 
 async function stopWorker() {
@@ -859,6 +1005,27 @@ function bindSettings() {
   $("btn-output-browse").addEventListener("click", async () => {
     const dir = await openDialog({ directory: true });
     if (typeof dir === "string") $<HTMLInputElement>("set-output").value = dir;
+  });
+  const showPathStatus = (s: { dir: string; on_path: boolean; cli_exists: boolean }) => {
+    const button = $<HTMLButtonElement>("btn-cli-path");
+    button.disabled = !s.cli_exists;
+    button.textContent = s.on_path ? "Remove from PATH" : "Add to PATH";
+    $("cli-path-status").textContent = !s.cli_exists
+      ? "Install Idol Studio with the installer to get idol-studio-cli on PATH."
+      : s.on_path
+        ? "On your PATH: type idol-studio-cli in any new terminal."
+        : "Not on your PATH.";
+  };
+  const refreshPath = () => invoke<{ dir: string; on_path: boolean; cli_exists: boolean }>("cli_path_status").then(showPathStatus).catch(() => {});
+  $("btn-settings").addEventListener("click", refreshPath);
+  $("btn-cli-path").addEventListener("click", async () => {
+    const on = $("btn-cli-path").textContent === "Add to PATH";
+    try {
+      showPathStatus(await invoke("cli_path_set", { on }));
+      toast(on ? "Added to PATH. New terminals can run idol-studio-cli." : "Removed from PATH.");
+    } catch (e) {
+      toast(String(e), true);
+    }
   });
   $("btn-cli-copy").addEventListener("click", async () => {
     await navigator.clipboard.writeText(`"${info.cli_path}"`);

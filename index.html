@@ -55,6 +55,7 @@
           <button class="tab" data-tab="pre">Model input</button>
           <div class="spacer"></div>
           <div class="viewer-tools" id="viewer-tools">
+            <select id="vt-show" title="Show the splat or an exported mesh" class="hidden"></select>
             <label class="check"><input type="checkbox" id="vt-rotate" /> Auto-rotate</label>
             <label class="check" title="Turn the splat upside down if it loads flipped"><input type="checkbox" id="vt-flip" /> Flip</label>
             <select id="vt-bg" title="Background">
@@ -81,6 +82,7 @@
             <div class="row gap">
               <button class="small ghost" id="btn-open-ply" disabled>Open .ply</button>
               <button class="small ghost" id="btn-reveal" disabled>Show in folder</button>
+              <button class="small" id="btn-export" disabled title="Save as .spz, .splat, mesh (.glb, .obj, .stl) or point cloud">Export...</button>
               <button class="small ghost" id="btn-use-params" disabled title="Copy this result's settings to the panel">Use these settings</button>
               <button class="small ghost danger" id="btn-delete-result" disabled>Delete</button>
             </div>
@@ -258,6 +260,10 @@
             <button type="button" class="small ghost" id="btn-cli-copy">Copy</button>
           </div>
           <small class="hint" id="cli-hint"></small>
+          <div class="row gap" style="margin-top: 8px">
+            <button type="button" class="small" id="btn-cli-path">Add to PATH</button>
+            <span class="muted" id="cli-path-status"></span>
+          </div>
         </section>
 
         <section>
@@ -272,6 +278,82 @@
         <div class="dialog-foot">
           <span class="muted" id="settings-saved"></span>
           <button type="button" class="primary" id="btn-save-settings">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Export dialog -->
+    <dialog id="export-dialog">
+      <form method="dialog" class="dialog">
+        <div class="dialog-head"><h2>Export</h2><button class="ghost small" value="cancel">Close</button></div>
+        <section>
+          <p class="muted" id="export-source"></p>
+          <div class="formats">
+            <div>
+              <h3>Gaussian splat</h3>
+              <label class="check"><input type="radio" name="export-format" value="spz" checked /> .spz <span class="muted">compressed, ~5x smaller</span></label>
+              <label class="check"><input type="radio" name="export-format" value="splat" /> .splat <span class="muted">antimatter15 viewers</span></label>
+              <label class="check"><input type="radio" name="export-format" value="ply" /> .ply <span class="muted">standard 3DGS copy</span></label>
+            </div>
+            <div>
+              <h3>Mesh</h3>
+              <label class="check"><input type="radio" name="export-format" value="glb" /> .glb <span class="muted">colours, Blender, engines, web</span></label>
+              <label class="check"><input type="radio" name="export-format" value="obj" /> .obj <span class="muted">colours, widely supported</span></label>
+              <label class="check"><input type="radio" name="export-format" value="stl" /> .stl <span class="muted">3D printing, z-up</span></label>
+              <label class="check"><input type="radio" name="export-format" value="mesh-ply" /> .ply mesh <span class="muted">colours, MeshLab</span></label>
+            </div>
+            <div>
+              <h3>Points</h3>
+              <label class="check"><input type="radio" name="export-format" value="points" /> .ply points <span class="muted">point-cloud tools</span></label>
+            </div>
+          </div>
+        </section>
+        <section id="mesh-options">
+          <h3>Mesh options</h3>
+          <p class="muted">The mesh is the surface of the splat's density, with vertex colours. Thin parts and fine detail can get lost; raise the resolution for more detail.</p>
+          <div class="grid2">
+            <div class="field">
+              <label for="ex-resolution">Resolution</label>
+              <select id="ex-resolution">
+                <option value="128">128 (fast)</option>
+                <option value="192">192</option>
+                <option value="256" selected>256 (default)</option>
+                <option value="384">384 (detailed)</option>
+                <option value="512">512 (slow, lots of RAM)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ex-faces">Triangles</label>
+              <select id="ex-faces">
+                <option value="50000">50,000</option>
+                <option value="100000">100,000</option>
+                <option value="200000" selected>200,000 (default)</option>
+                <option value="500000">500,000</option>
+                <option value="0">all (no simplification)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ex-threshold">Surface threshold</label>
+              <div class="slider-row"><input type="range" id="ex-threshold" min="0.1" max="2" step="0.05" value="0.5" /><output id="out-threshold">0.50</output></div>
+              <small class="hint">Lower: fuller, closes holes. Higher: thinner.</small>
+            </div>
+            <div class="field">
+              <label for="ex-smooth">Smoothing</label>
+              <div class="slider-row"><input type="range" id="ex-smooth" min="0" max="40" step="1" value="10" /><output id="out-smooth">10</output></div>
+            </div>
+            <div class="field">
+              <label for="ex-height">Height (optional)</label>
+              <input type="number" id="ex-height" min="0" step="any" placeholder="native size" />
+              <small class="hint">Scale so the object is this tall in file units, e.g. 100 for 100 mm in an STL.</small>
+            </div>
+          </div>
+        </section>
+        <section>
+          <label class="check"><input type="checkbox" id="ex-saveas" /> Choose where to save (otherwise next to the splat)</label>
+        </section>
+        <div class="dialog-foot">
+          <span class="muted">Exports run in the queue.</span>
+          <button type="button" class="primary" id="btn-export-go">Export</button>
         </div>
       </form>
     </dialog>

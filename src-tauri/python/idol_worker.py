@@ -354,7 +354,42 @@ def cmd_generate(request):
          seconds=round(seconds, 2), num_gaussians=int(output.gaussian.xyz.shape[0]), **gpu_memory())
 
 
-COMMANDS = {'hello': cmd_hello, 'check_access': cmd_check_access, 'load': cmd_load,
+def cmd_export(request):
+    """Export a splat .ply to another format (idol_export.py, next to this script)."""
+    import_idol()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import idol_export
+    if request.get('format', 'glb') in idol_export.MESH_FORMATS:
+        try:
+            import scipy, skimage, trimesh  # noqa: F401
+        except ImportError as error:
+            raise UserError(f'Mesh export needs {error.name}. Run "Set up / repair environment" in Settings '
+                            '(or `idol-studio-cli setup`) to install it.')
+    job_id = request['id']
+    labels = {'density': 'Building the density field', 'surface': 'Extracting the surface',
+              'smooth': 'Smoothing', 'simplify': 'Simplifying'}
+    last = {'stage': None, 'pct': -1}
+
+    def progress(stage, fraction):
+        if cancel_flag.is_set():
+            raise Cancelled()
+        pct = int(fraction * 100)
+        if stage != last['stage'] or pct >= last['pct'] + 5:
+            last.update(stage=stage, pct=pct)
+            send('status', id=job_id, stage='export', message=f"{labels.get(stage, stage)}... {pct}%")
+
+    fmt = request.get('format', 'glb')
+    send('status', id=job_id, stage='export', message=f'Exporting {fmt}...')
+    info = idol_export.export(request['ply'], fmt, request.get('out_path'),
+                              resolution=request.get('resolution') or 256,
+                              threshold=request.get('threshold') if request.get('threshold') is not None else 0.5,
+                              smooth=request.get('smooth') if request.get('smooth') is not None else 10,
+                              faces=request.get('faces') if request.get('faces') is not None else 200_000,
+                              height=request.get('height'), progress=progress)
+    send('exported', id=job_id, ply=request['ply'], **info)
+
+
+COMMANDS = {'hello': cmd_hello, 'export': cmd_export, 'check_access': cmd_check_access, 'load': cmd_load,
             'preprocess': cmd_preprocess, 'generate': cmd_generate}
 
 

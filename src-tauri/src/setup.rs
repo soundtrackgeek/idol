@@ -79,7 +79,8 @@ fn setup_inner(log: Log) -> Result<PathBuf, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     log(format!("Environment folder: {env_str}"));
-    let mut extras = vec![IDOL_PACKAGE, "accelerate"];
+    // accelerate: faster model loading; the rest: mesh export (marching cubes, mesh I/O, decimation).
+    let mut extras = vec![IDOL_PACKAGE, "accelerate", "scipy", "scikit-image", "trimesh", "fast-simplification"];
     if cfg!(windows) {
         extras.push("triton-windows");
     }
@@ -90,7 +91,7 @@ fn setup_inner(log: Log) -> Result<PathBuf, String> {
         run(log, &uv, &["venv", "--allow-existing", "--python", "3.12", &env_str])?;
         log("Installing PyTorch with CUDA 12.8 (about 3 GB, this takes a while)...".into());
         run(log, &uv, &["pip", "install", "--python", &python_str, "torch", "torchvision", "--index-url", TORCH_INDEX])?;
-        log("Installing Idol, Triton and accelerate...".into());
+        log("Installing Idol, Triton and the export packages...".into());
         let mut args = vec!["pip", "install", "--python", &python_str];
         args.extend(&extras);
         run(log, &uv, &args)?;
@@ -115,7 +116,7 @@ fn setup_inner(log: Log) -> Result<PathBuf, String> {
         run(log, &python, &["-m", "pip", "install", "--upgrade", "pip"])?;
         log("Installing PyTorch with CUDA 12.8 (about 3 GB, this takes a while)...".into());
         run(log, &python, &["-m", "pip", "install", "torch", "torchvision", "--index-url", TORCH_INDEX])?;
-        log("Installing Idol, Triton and accelerate...".into());
+        log("Installing Idol, Triton and the export packages...".into());
         let mut args = vec!["-m", "pip", "install"];
         args.extend(&extras);
         run(log, &python, &args)?;

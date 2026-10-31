@@ -2,6 +2,32 @@
 
 All notable changes to Idol Studio are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-31
+
+### Added
+
+- **Export results** from the app's Export button or the CLI, to:
+  - splats: `.spz` (compressed), `.splat` and a standard `.ply` copy;
+  - a point cloud: `.ply` with colours;
+  - meshes with vertex colours: `.glb`, `.obj`, `.ply` and `.stl` for 3D printing.
+- Mesh options: grid resolution, surface threshold, smoothing, target triangle count and an optional real-world height (e.g. 100 mm for an STL). Exported `.glb` meshes can be previewed in the viewer with lighting.
+- Exported files are remembered on each result (chips on the result card) and can be picked from the viewer's Splat/Mesh menu.
+- `idol-studio-cli export` and `generate --export`, with the same mesh options. `serve` handles exports too.
+- The installer now adds the CLI's folder to the user PATH (and removes it on uninstall); Settings → Command line shows whether it is on PATH, with Add/Remove buttons. A portable build with the CLI next to it uses the same toggle.
+- `idol-studio-cli path add|remove|status`.
+
+### Changed
+
+- Environment setup also installs `scipy`, `scikit-image`, `trimesh` and `fast-simplification` for mesh export. Existing environments get them from **Set up / repair environment** (or `idol-studio-cli setup`).
+- Exported meshes are upright (y-up for glTF/OBJ/PLY, z-up for STL), centred and standing on the ground plane.
+
+### Fixed
+
+- Fast orbiting no longer makes the splat look hollow or smeared. Spark sorts splats asynchronously; the viewer now draws only after the sort matches the exact camera pose, instead of showing frames with an order a few frames old (measured 0° sort lag during a fast spin, down from 5–6°).
+- Mesh exports have outward-facing normals and sample colour from the visible surface, not the object's interior, so they light and colour correctly.
+- `.spz` exports are converted from the PLY frame to SPZ's y-up frame, so they load upright in SPZ viewers.
+- The frontend build now has the Vite client types it needs for `import.meta.env`.
+
 ## [0.2.0] - 2026-10-31
 
 ### Added

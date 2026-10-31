@@ -7,18 +7,23 @@ use std::process::{Child, Command, Stdio};
 
 /// The worker script is compiled into the app and written to the app data folder, so the installer, the portable
 /// .exe and the CLI all behave the same.
-const WORKER_SOURCE: &str = include_str!("../python/idol_worker.py");
+const SCRIPTS: [(&str, &str); 2] = [
+    ("idol_worker.py", include_str!("../python/idol_worker.py")),
+    ("idol_export.py", include_str!("../python/idol_export.py")),
+];
 
+/// Write the worker scripts (if changed) and return the path of the main one.
 pub fn script_path() -> Result<PathBuf, String> {
     let dir = paths::local_data_dir()?.join("worker");
-    let path = dir.join("idol_worker.py");
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current != WORKER_SOURCE {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        // Write to a temp file first: another process may be starting the same script right now.
-        paths::write_atomic(&path, WORKER_SOURCE.as_bytes())?;
+    for (name, source) in SCRIPTS {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).unwrap_or_default() != source {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            // Write to a temp file first: another process may be starting the same script right now.
+            paths::write_atomic(&path, source.as_bytes())?;
+        }
     }
-    Ok(path)
+    Ok(dir.join(SCRIPTS[0].0))
 }
 
 /// Hide the console window that Windows would open for a console program started from a GUI program.

@@ -5,7 +5,7 @@
 //! later `generate` calls skip the load and compile.
 
 use crate::library::{self, GenParams, LibResult};
-use crate::{paths, process, settings, setup};
+use crate::{pathenv, paths, process, settings, setup};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -24,7 +24,8 @@ pub const EXIT_ACCESS: i32 = 3;
 pub const DEFAULT_PORT: u16 = 47817;
 const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "bmp"];
 
-const SUBCOMMANDS: [&str; 8] = ["generate", "preview", "check-access", "info", "setup", "serve", "config", "library"];
+const SUBCOMMANDS: [&str; 10] =
+    ["generate", "preview", "export", "check-access", "info", "setup", "serve", "config", "library", "path"];
 
 /// True when the process was started with a CLI command (or --help / --version) rather than as the app.
 pub fn is_cli_invocation() -> bool {
@@ -48,6 +49,9 @@ pub fn is_cli_invocation() -> bool {
     after_help = "Examples:\n  \
         idol-studio-cli generate photo.jpg --mode real\n  \
         idol-studio-cli generate renders/ --variants 3 --gaussians 524288 --json\n  \
+        idol-studio-cli generate photo.jpg --mode real --export glb,spz\n  \
+        idol-studio-cli export result.ply --format stl --height 100\n  \
+        idol-studio-cli path add         (use idol-studio-cli from any terminal)\n  \
         idol-studio-cli serve            (in another terminal: keeps the model loaded)\n  \
         idol-studio-cli check-access --json"
 )]
@@ -62,18 +66,124 @@ enum Command {
     Generate(GenerateArgs),
     /// Save the background-removed, cropped image the model would see (fast: loads only BiRefNet)
     Preview(PreviewArgs),
+    /// Export splats (.ply) to other formats: spz, splat, points, glb, obj, stl, mesh-ply
+    Export(ExportArgs),
     /// Check Hugging Face access to the gated encoders Idol needs
     CheckAccess(PipelineArgs),
     /// Show versions, paths, settings and the GPU
     Info(InfoArgs),
     /// Create or repair the Python environment (CUDA PyTorch, Idol, Triton)
     Setup(JsonArg),
-    /// Keep a worker with the model loaded; `generate` and `preview` use it automatically
+    /// Keep a worker with the model loaded; `generate`, `preview` and `export` use it automatically
     Serve(ServeArgs),
     /// Show or change settings
     Config(ConfigArgs),
     /// List the images and results in the app's library
     Library(JsonArg),
+    /// Add the CLI's folder to your user PATH, remove it, or show the status
+    Path(PathArgs),
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Debug)]
+enum Format {
+    /// Standard 3D Gaussian splat .ply (a copy)
+    Ply,
+    /// Niantic .spz: compressed splats (~3 MB instead of 17 MB)
+    Spz,
+    /// antimatter15 .splat
+    Splat,
+    /// Point cloud .ply (xyz + rgb)
+    Points,
+    /// Mesh with vertex colours, glTF binary
+    Glb,
+    /// Mesh with vertex colours, Wavefront OBJ
+    Obj,
+    /// Mesh for 3D printing (z-up, no colour)
+    Stl,
+    /// Mesh with vertex colours, .ply
+    MeshPly,
+}
+
+impl Format {
+    fn name(self) -> &'static str {
+        match self {
+            Format::Ply => "ply",
+            Format::Spz => "spz",
+            Format::Splat => "splat",
+            Format::Points => "points",
+            Format::Glb => "glb",
+            Format::Obj => "obj",
+            Format::Stl => "stl",
+            Format::MeshPly => "mesh-ply",
+        }
+    }
+    /// File name suffix added to the splat's base name.
+    fn suffix(self) -> &'static str {
+        match self {
+            Format::Ply => "_splat.ply",
+            Format::Spz => ".spz",
+            Format::Splat => ".splat",
+            Format::Points => "_points.ply",
+            Format::Glb => ".glb",
+            Format::Obj => ".obj",
+            Format::Stl => ".stl",
+            Format::MeshPly => "_mesh.ply",
+        }
+    }
+}
+
+#[derive(Args, Clone)]
+struct MeshArgs {
+    /// Mesh: grid resolution (higher is more detailed and slower)
+    #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(64..=768))]
+    resolution: u32,
+    /// Mesh: surface threshold on the splat density (lower is fuller and closes holes, higher is thinner)
+    #[arg(long, default_value_t = 0.5)]
+    threshold: f64,
+    /// Mesh: smoothing passes (0 = none)
+    #[arg(long, default_value_t = 10)]
+    smooth: u32,
+    /// Mesh: target triangle count (0 keeps all)
+    #[arg(long, default_value_t = 200_000)]
+    faces: u64,
+    /// Mesh: scale so the object is this tall, in file units (e.g. 100 = 100 mm in an STL)
+    #[arg(long)]
+    height: Option<f64>,
+}
+
+#[derive(Args)]
+struct ExportArgs {
+    /// Splat .ply files and/or folders of them (from Idol)
+    #[arg(required = true)]
+    plys: Vec<PathBuf>,
+    /// Formats, comma separated: ply, spz, splat, points, glb, obj, stl, mesh-ply
+    #[arg(long, short, value_enum, value_delimiter = ',', required = true)]
+    format: Vec<Format>,
+    /// Output file (one input and one format) or folder [default: next to the .ply]
+    #[arg(long, short)]
+    out: Option<PathBuf>,
+    #[command(flatten)]
+    mesh: MeshArgs,
+    #[command(flatten)]
+    pipeline: PipelineArgs,
+}
+
+#[derive(Args)]
+struct PathArgs {
+    #[command(subcommand)]
+    action: Option<PathAction>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Subcommand)]
+enum PathAction {
+    /// Add the folder with idol-studio-cli.exe to your user PATH (new terminals pick it up)
+    Add,
+    /// Remove it from your user PATH
+    Remove,
+    /// Show whether it is on PATH
+    Status,
 }
 
 #[derive(Args, Clone, Copy)]
@@ -169,6 +279,11 @@ struct GenerateArgs {
     /// Don't add the results to the app's library
     #[arg(long)]
     no_library: bool,
+    /// Also export every result, comma separated: ply, spz, splat, points, glb, obj, stl, mesh-ply
+    #[arg(long, value_enum, value_delimiter = ',')]
+    export: Vec<Format>,
+    #[command(flatten)]
+    mesh: MeshArgs,
     #[command(flatten)]
     pipeline: PipelineArgs,
 }
@@ -269,6 +384,7 @@ fn answer_for(cmd: &str) -> &'static str {
         "check_access" => "access",
         "hello" => "hello",
         "load" => "loaded",
+        "export" => "exported",
         _ => "done",
     }
 }
@@ -522,6 +638,35 @@ fn stem(path: &Path) -> String {
     stem.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect()
 }
 
+/// Expand folders (not recursive) and check that every file is a splat .ply.
+fn collect_plys(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut plys = Vec::new();
+    for input in inputs {
+        let path = absolute(input);
+        if path.is_dir() {
+            let mut found: Vec<PathBuf> = std::fs::read_dir(&path)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ply")))
+                .collect();
+            found.sort();
+            if found.is_empty() {
+                return Err(format!("{}: no .ply files in this folder", path.display()));
+            }
+            plys.extend(found);
+        } else if path.is_file() {
+            if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ply")) {
+                return Err(format!("{}: not a .ply splat file", path.display()));
+            }
+            plys.push(path);
+        } else {
+            return Err(format!("{}: file not found", path.display()));
+        }
+    }
+    Ok(plys)
+}
+
 /// UTC timestamp like 20261031-121115 (same format as the app).
 fn timestamp() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
@@ -688,6 +833,7 @@ fn cmd_generate(args: GenerateArgs) -> i32 {
                     num_gaussians: event["num_gaussians"].as_u64().unwrap_or(args.gaussians),
                     vram_peak_gb: event["vram_peak_gb"].as_f64(),
                     created: library::now_ms(),
+                    exports: vec![],
                 };
                 if !args.no_library {
                     let preview = result.preprocessed.clone();
@@ -700,11 +846,21 @@ fn cmd_generate(args: GenerateArgs) -> i32 {
                         out.say(format!("  warning: could not add the result to the library: {e}"));
                     }
                 }
+                let mut exports = Vec::new();
+                for format in &args.export {
+                    match run_export(&mut backend, &out, Path::new(&result.ply), *format, None, &args.mesh, n, !args.no_library) {
+                        Ok(info) => exports.push(info),
+                        Err(e) => {
+                            exit = EXIT_ERROR;
+                            exports.push(json!({"format": format.name(), "error": e}));
+                        }
+                    }
+                }
                 let summary = json!({
                     "event": "result", "job": n, "image": image, "seed": seed, "ply": result.ply,
                     "preprocessed": result.preprocessed, "camera_path": result.camera_path, "camera": event["camera"],
                     "seconds": result.seconds, "num_gaussians": result.num_gaussians, "vram_peak_gb": result.vram_peak_gb,
-                    "params": params,
+                    "params": params, "exports": exports,
                 });
                 out.event(summary.clone());
                 out.say(format!("  done in {}s: {}", result.seconds, result.ply));
@@ -787,6 +943,146 @@ fn cmd_preview(args: PreviewArgs) -> i32 {
         Ok(event) => {
             out.error(event["message"].as_str().unwrap_or("failed"));
             EXIT_ERROR
+        }
+        Err(e) => {
+            out.error(&e);
+            EXIT_ERROR
+        }
+    }
+}
+
+/// Export one splat .ply through the worker. Returns the `exported` event (path, bytes, mesh stats).
+#[allow(clippy::too_many_arguments)]
+fn run_export(
+    backend: &mut Backend,
+    out: &Out,
+    ply: &Path,
+    format: Format,
+    target: Option<PathBuf>,
+    mesh: &MeshArgs,
+    job: usize,
+    record: bool,
+) -> Result<Value, String> {
+    let request = json!({
+        "cmd": "export", "id": format!("cli-{}", library::new_id()), "ply": ply, "format": format.name(),
+        "out_path": target, "resolution": mesh.resolution, "threshold": mesh.threshold, "smooth": mesh.smooth,
+        "faces": mesh.faces, "height": mesh.height,
+    });
+    out.say(format!("  exporting {}...", format.name()));
+    let event = backend.request(&request, &mut |event| {
+        if event["event"] == "status" {
+            out.event(json!({"event": "status", "job": job, "stage": "export", "message": event["message"]}));
+        }
+        true
+    })?;
+    if event["event"] != "exported" {
+        let message = event["message"].as_str().unwrap_or("export failed").to_string();
+        out.say(format!("  export {} failed: {message}", format.name()));
+        return Err(message);
+    }
+    let path = event["path"].as_str().unwrap_or("").to_string();
+    if record {
+        let _ = library::add_export(&ply.display().to_string(), format.name(), &path);
+    }
+    let mut info = json!({"format": format.name(), "path": path, "bytes": event["bytes"], "seconds": event["seconds"]});
+    for key in ["vertices", "faces", "watertight", "size", "splats"] {
+        if !event[key].is_null() {
+            info[key] = event[key].clone();
+        }
+    }
+    out.event(merge(json!({"event": "exported", "job": job, "ply": ply}), &info));
+    out.say(format!("  {} -> {}", format.name(), path));
+    Ok(info)
+}
+
+fn cmd_export(args: ExportArgs) -> i32 {
+    let out = Out { json: args.pipeline.json };
+    let plys = match collect_plys(&args.plys) {
+        Ok(p) => p,
+        Err(e) => {
+            out.error(&e);
+            return EXIT_USAGE;
+        }
+    };
+    let single = plys.len() == 1 && args.format.len() == 1;
+    let out_target = args.out.as_ref().map(|o| absolute(o));
+    if let Some(target) = &out_target {
+        if !single && target.is_file() {
+            out.error("with several inputs or formats, --out must be a folder");
+            return EXIT_USAGE;
+        }
+    }
+    let mut backend = match Backend::open(&args.pipeline, &out) {
+        Ok(b) => b,
+        Err(e) => {
+            out.error(&e);
+            return EXIT_ERROR;
+        }
+    };
+    let (mut ok, mut failed) = (Vec::new(), 0);
+    let mut job = 0;
+    for ply in &plys {
+        for format in &args.format {
+            job += 1;
+            let target = out_target.as_ref().map(|t| {
+                let is_dir = !single || t.is_dir() || t.extension().is_none();
+                if is_dir {
+                    let stem = ply.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    t.join(format!("{stem}{}", format.suffix()))
+                } else {
+                    t.clone()
+                }
+            });
+            out.say(format!("{} -> {}", ply.display(), format.name()));
+            match run_export(&mut backend, &out, ply, *format, target, &args.mesh, job, true) {
+                Ok(info) => {
+                    if !out.json {
+                        println!("{}", info["path"].as_str().unwrap_or(""));
+                    }
+                    ok.push(info);
+                }
+                Err(_) => failed += 1,
+            }
+        }
+    }
+    backend.close();
+    out.event(json!({"event": "summary", "ok": ok.len(), "failed": failed, "exports": ok}));
+    if failed > 0 { EXIT_ERROR } else { EXIT_OK }
+}
+
+fn cmd_path(args: PathArgs) -> i32 {
+    let out = Out { json: args.json };
+    let dir = match pathenv::cli_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            out.error(&e);
+            return EXIT_ERROR;
+        }
+    };
+    let result = match args.action.unwrap_or(PathAction::Status) {
+        PathAction::Add => pathenv::add(&dir).map(|changed| (changed, "added to")),
+        PathAction::Remove => pathenv::remove(&dir).map(|changed| (changed, "removed from")),
+        PathAction::Status => pathenv::contains(&dir).map(|on| (on, "status")),
+    };
+    match result {
+        Ok((flag, "status")) => {
+            out.event(json!({"event": "path", "dir": dir, "on_path": flag}));
+            if !out.json {
+                println!("{} is {}on your PATH", dir.display(), if flag { "" } else { "not " });
+            }
+            EXIT_OK
+        }
+        Ok((changed, what)) => {
+            let on_path = pathenv::contains(&dir).unwrap_or(false);
+            out.event(json!({"event": "path", "dir": dir, "on_path": on_path, "changed": changed}));
+            if !out.json {
+                if changed {
+                    println!("{} {what} your PATH. Open a new terminal to use `idol-studio-cli`.", dir.display());
+                } else {
+                    println!("Nothing to do: {} was already {}.", dir.display(), if on_path { "on your PATH" } else { "off your PATH" });
+                }
+            }
+            EXIT_OK
         }
         Err(e) => {
             out.error(&e);
@@ -1110,6 +1406,8 @@ pub fn run() -> i32 {
     match cli.command {
         Command::Generate(args) => cmd_generate(args),
         Command::Preview(args) => cmd_preview(args),
+        Command::Export(args) => cmd_export(args),
+        Command::Path(args) => cmd_path(args),
         Command::CheckAccess(args) => cmd_check_access(args),
         Command::Info(args) => cmd_info(args),
         Command::Setup(args) => cmd_setup(args),

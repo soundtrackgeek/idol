@@ -1,5 +1,6 @@
 pub mod cli;
 mod library;
+mod pathenv;
 mod paths;
 mod process;
 mod settings;
@@ -155,6 +156,9 @@ pub fn run() {
             library::library_load,
             library::library_save,
             library::library_import,
+            library::library_add_export,
+            pathenv::cli_path_status,
+            pathenv::cli_path_set,
             worker::worker_send,
             worker::worker_stop,
             worker::worker_running,

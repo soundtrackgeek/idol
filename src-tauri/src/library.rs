@@ -35,6 +35,15 @@ pub struct LibResult {
     pub vram_peak_gb: Option<f64>,
     /// Milliseconds since 1970 (JavaScript Date.now()).
     pub created: u64,
+    /// Files exported from this result (other formats).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<ExportRecord>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExportRecord {
+    pub format: String,
+    pub path: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -116,6 +125,18 @@ pub fn update<T>(change: impl FnOnce(&mut Vec<LibraryImage>) -> T) -> Result<T, 
     })
 }
 
+/// Remember an exported file on the result whose splat is `ply` (if it is in the library).
+pub fn add_export(ply: &str, format: &str, path: &str) -> Result<(), String> {
+    update(|lib| {
+        for image in lib.iter_mut() {
+            for result in image.results.iter_mut().filter(|r| r.ply.eq_ignore_ascii_case(ply)) {
+                result.exports.retain(|e| !e.path.eq_ignore_ascii_case(path));
+                result.exports.push(ExportRecord { format: format.into(), path: path.into() });
+            }
+        }
+    })
+}
+
 /// Find the image with this path, adding it if needed. Returns its index.
 pub fn ensure_image(library: &mut Vec<LibraryImage>, path: &Path) -> usize {
     let path_str = path.display().to_string();
@@ -163,6 +184,11 @@ pub fn watch(app: AppHandle) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // GUI commands
+
+#[tauri::command]
+pub fn library_add_export(ply: String, format: String, path: String) -> Result<(), String> {
+    add_export(&ply, &format, &path)
+}
 
 #[tauri::command]
 pub fn library_load() -> Vec<LibraryImage> {
