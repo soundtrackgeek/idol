@@ -2,6 +2,20 @@
 
 All notable changes to Idol Studio are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-31
+
+### Added
+
+- **Much better mesh export.** Meshes now default to screened Poisson reconstruction (Open3D) from the Gaussian centres and their smallest-axis normals, instead of the opacity density field. Faces, eyes, hands and thin parts survive, and vertex colours are sampled from the nearest splats instead of a blurred voxel average.
+- A **Reconstruction** choice in the Export dialog: Poisson (recommended) or density field (for very thin/unusual objects). The CLI has `--method poisson|density`; `--resolution` controls Poisson detail.
+- GLB exports now include a matte PBR material. Without one, glTF viewers use the spec's metallic default, which was washing out the vertex colours.
+- GLB vertex colours are converted from the splat's display (sRGB) values to glTF's linear space. Blender, Windows 3D Viewer and other compliant viewers no longer show a pale, washed-out model.
+
+### Changed
+
+- Environment setup installs Open3D for Poisson reconstruction.
+- Mesh smoothing default is 3 passes instead of 10; high smoothing was melting details. The density method still uses its surface-threshold control.
+
 ## [0.3.0] - 2026-10-31
 
 ### Added

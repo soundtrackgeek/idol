@@ -79,8 +79,8 @@ fn setup_inner(log: Log) -> Result<PathBuf, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     log(format!("Environment folder: {env_str}"));
-    // accelerate: faster model loading; the rest: mesh export (marching cubes, mesh I/O, decimation).
-    let mut extras = vec![IDOL_PACKAGE, "accelerate", "scipy", "scikit-image", "trimesh", "fast-simplification"];
+    // accelerate: faster model loading; the rest: mesh export (Poisson reconstruction, mesh I/O, decimation).
+    let mut extras = vec![IDOL_PACKAGE, "accelerate", "scipy", "scikit-image", "trimesh", "fast-simplification", "open3d"];
     if cfg!(windows) {
         extras.push("triton-windows");
     }

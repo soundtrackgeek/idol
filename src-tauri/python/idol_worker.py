@@ -359,15 +359,19 @@ def cmd_export(request):
     import_idol()
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import idol_export
+    method = request.get('method', 'poisson')
     if request.get('format', 'glb') in idol_export.MESH_FORMATS:
         try:
             import scipy, skimage, trimesh  # noqa: F401
+            if method == 'poisson':
+                import open3d  # noqa: F401
         except ImportError as error:
-            raise UserError(f'Mesh export needs {error.name}. Run "Set up / repair environment" in Settings '
+            package = 'Open3D' if error.name == 'open3d' else error.name
+            raise UserError(f'Mesh export needs {package}. Run "Set up / repair environment" in Settings '
                             '(or `idol-studio-cli setup`) to install it.')
     job_id = request['id']
-    labels = {'density': 'Building the density field', 'surface': 'Extracting the surface',
-              'smooth': 'Smoothing', 'simplify': 'Simplifying'}
+    labels = {'density': 'Building the density field', 'surface': 'Reconstructing the surface',
+              'colour': 'Colouring', 'smooth': 'Smoothing', 'simplify': 'Simplifying'}
     last = {'stage': None, 'pct': -1}
 
     def progress(stage, fraction):
@@ -383,9 +387,9 @@ def cmd_export(request):
     info = idol_export.export(request['ply'], fmt, request.get('out_path'),
                               resolution=request.get('resolution') or 256,
                               threshold=request.get('threshold') if request.get('threshold') is not None else 0.5,
-                              smooth=request.get('smooth') if request.get('smooth') is not None else 10,
+                              smooth=request.get('smooth') if request.get('smooth') is not None else 3,
                               faces=request.get('faces') if request.get('faces') is not None else 200_000,
-                              height=request.get('height'), progress=progress)
+                              height=request.get('height'), method=method, progress=progress)
     send('exported', id=job_id, ply=request['ply'], **info)
 
 

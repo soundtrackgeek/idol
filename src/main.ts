@@ -61,6 +61,7 @@ interface Job {
 }
 
 interface ExportOptions {
+  method: "poisson" | "density";
   resolution: number;
   threshold: number;
   smooth: number;
@@ -871,23 +872,36 @@ function bindExport() {
   const dialog = $<HTMLDialogElement>("export-dialog");
   const saved = loadJson<{ format: string; options: ExportOptions; saveAs: boolean }>(EXPORT_OPTIONS_KEY, {
     format: "spz",
-    options: { resolution: 256, threshold: 0.5, smooth: 10, faces: 200000, height: null },
+    options: { method: "poisson", resolution: 256, threshold: 0.5, smooth: 3, faces: 200000, height: null },
     saveAs: false,
   });
+  if (!saved.options.method) {
+    // Older saved settings predate Poisson; the old 10-pass default would over-smooth it.
+    saved.options.method = "poisson";
+    saved.options.smooth = 3;
+  }
+  saved.options.smooth ??= 3;
   const formatInputs = () => [...dialog.querySelectorAll<HTMLInputElement>('input[name="export-format"]')];
   const format = () => formatInputs().find((i) => i.checked)?.value ?? "spz";
-  const syncMesh = () => $("mesh-options").classList.toggle("hidden", !MESH_FORMATS.includes(format()));
+  const method = () => ($<HTMLSelectElement>("ex-method").value as ExportOptions["method"]) ?? "poisson";
+  const syncMesh = () => {
+    const mesh = MESH_FORMATS.includes(format());
+    $("mesh-options").classList.toggle("hidden", !mesh);
+    $("field-threshold").classList.toggle("hidden", !mesh || method() !== "density");
+  };
   const syncOutputs = () => {
     $("out-threshold").textContent = Number($<HTMLInputElement>("ex-threshold").value).toFixed(2);
     $("out-smooth").textContent = $<HTMLInputElement>("ex-smooth").value;
   };
   formatInputs().forEach((i) => i.addEventListener("change", syncMesh));
+  $("ex-method").addEventListener("change", syncMesh);
   ["ex-threshold", "ex-smooth"].forEach((id) => $(id).addEventListener("input", syncOutputs));
 
   $("btn-export").addEventListener("click", () => {
     const result = selectedResult();
     if (!result) return;
     formatInputs().forEach((i) => (i.checked = i.value === saved.format));
+    $<HTMLSelectElement>("ex-method").value = saved.options.method;
     $<HTMLSelectElement>("ex-resolution").value = String(saved.options.resolution);
     $<HTMLSelectElement>("ex-faces").value = String(saved.options.faces);
     $<HTMLInputElement>("ex-threshold").value = String(saved.options.threshold);
@@ -906,6 +920,7 @@ function bindExport() {
     if (!result || !image) return;
     const height = Number($<HTMLInputElement>("ex-height").value);
     const options: ExportOptions = {
+      method: method(),
       resolution: Number($<HTMLSelectElement>("ex-resolution").value),
       threshold: Number($<HTMLInputElement>("ex-threshold").value),
       smooth: Number($<HTMLInputElement>("ex-smooth").value),

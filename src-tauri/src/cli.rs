@@ -132,16 +132,36 @@ impl Format {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Debug)]
+enum MeshMethod {
+    /// Screened Poisson reconstruction (best for faces and smooth surfaces)
+    Poisson,
+    /// Opacity density field + marching cubes (keeps very thin parts)
+    Density,
+}
+
+impl MeshMethod {
+    fn name(self) -> &'static str {
+        match self {
+            MeshMethod::Poisson => "poisson",
+            MeshMethod::Density => "density",
+        }
+    }
+}
+
 #[derive(Args, Clone)]
 struct MeshArgs {
-    /// Mesh: grid resolution (higher is more detailed and slower)
+    /// Mesh: reconstruction method
+    #[arg(long, value_enum, default_value = "poisson")]
+    method: MeshMethod,
+    /// Mesh: detail level (higher is more detailed and slower)
     #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(64..=768))]
     resolution: u32,
-    /// Mesh: surface threshold on the splat density (lower is fuller and closes holes, higher is thinner)
+    /// Mesh (density method): surface threshold on the splat density
     #[arg(long, default_value_t = 0.5)]
     threshold: f64,
     /// Mesh: smoothing passes (0 = none)
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 3)]
     smooth: u32,
     /// Mesh: target triangle count (0 keeps all)
     #[arg(long, default_value_t = 200_000)]
@@ -965,8 +985,8 @@ fn run_export(
 ) -> Result<Value, String> {
     let request = json!({
         "cmd": "export", "id": format!("cli-{}", library::new_id()), "ply": ply, "format": format.name(),
-        "out_path": target, "resolution": mesh.resolution, "threshold": mesh.threshold, "smooth": mesh.smooth,
-        "faces": mesh.faces, "height": mesh.height,
+        "method": mesh.method.name(), "out_path": target, "resolution": mesh.resolution,
+        "threshold": mesh.threshold, "smooth": mesh.smooth, "faces": mesh.faces, "height": mesh.height,
     });
     out.say(format!("  exporting {}...", format.name()));
     let event = backend.request(&request, &mut |event| {

@@ -54,7 +54,7 @@ The installer also installs `idol-studio-cli.exe` next to the app and adds that 
 
 ## First run
 
-1. Open **Settings → Set up / repair environment**. This creates a Python environment in `%LOCALAPPDATA%\com.soundtrackgeek.idolstudio\env` with PyTorch (CUDA 12.8), Idol, `triton-windows` and the mesh-export packages. You can watch the progress in the dialog.
+1. Open **Settings → Set up / repair environment**. This creates a Python environment in `%LOCALAPPDATA%\com.soundtrackgeek.idolstudio\env` with PyTorch (CUDA 12.8), Idol, `triton-windows`, Open3D and the mesh-export packages. You can watch the progress in the dialog.
    - If you already have a Python with Idol installed, set **Python interpreter** to that `python.exe` instead.
 2. Paste a Hugging Face **access token** into Settings, then press **Check access**. Each gated repo should show ✔.
    - Fine-grained tokens need *"Read access to contents of all public gated repos you can access"*.
@@ -83,7 +83,7 @@ Exports go next to the splat by default (`..._splat.ply`, `.spz`, `.splat`, `...
 
 ## Export
 
-Select a result and press **Export...**. Splat and point-cloud formats are quick; meshes are built from the splat's density field and take a few seconds to a minute depending on resolution.
+Select a result and press **Export...**. Splat and point-cloud formats are quick; meshes take a few seconds to a minute depending on detail.
 
 | Format | | |
 |---|---|---|
@@ -96,7 +96,17 @@ Select a result and press **Export...**. Splat and point-cloud formats are quick
 | `.ply` mesh | mesh | vertex colours, y-up, for MeshLab |
 | `.stl` | mesh | z-up, centred and standing on z=0, for slicers |
 
-Mesh exports use a density field and marching cubes, then smooth, drop small floaters and decimate. Thin parts and fine detail can be lost; raise **Resolution** (128–512) and lower **Surface threshold** for a fuller shape, or raise the threshold for a thinner one. **Triangles** sets the target count (0 keeps all). **Height** scales the object so it is that tall in file units (for example 100 for 100 mm in an STL). The exported `.glb` appears in the viewer's **Splat / Mesh** menu for that result.
+Mesh exports default to **screened Poisson reconstruction** from the Gaussian centres. It fits a smooth surface through the splats and keeps faces, eyes and thin parts far better than a voxel density field; vertex colours come from the nearest splats. The **density field** method is there for very thin or unusual objects. Both methods give the GLB a matte material and convert the colours to glTF's linear space, because glTF's defaults otherwise make vertex-coloured meshes look pale or metallic.
+
+Mesh options:
+
+- **Detail** maps to the Poisson depth (128 fast, 256 default, 512 highest). Higher keeps more detail and is slower.
+- **Triangles** sets the target count (0 keeps all).
+- **Smoothing** is the number of Taubin passes (3 by default; 0 keeps the raw reconstruction).
+- **Surface threshold** applies to the density method only: lower is fuller, higher is thinner.
+- **Height** scales the object so it is that tall in file units (for example 100 for 100 mm in an STL).
+
+The exported `.glb` appears in the viewer's **Splat / Mesh** menu for that result.
 
 ## Options
 
@@ -160,9 +170,10 @@ idol-studio-cli library --json                                 # every image and
 | `--optimize` / `--no-optimize` | settings | torch.compile |
 | `--weights <repo or dir>` | settings | Idol weights |
 | `--export <formats>` | off | also export every result: `ply,spz,splat,points,glb,obj,stl,mesh-ply` |
-| `--resolution <n>` | 256 | mesh grid resolution, 64–768 |
-| `--threshold <f>` | 0.5 | mesh surface threshold (lower is fuller) |
-| `--smooth <n>` | 10 | mesh smoothing passes (0 = none) |
+| `--method poisson` / `density` | `poisson` | mesh reconstruction method |
+| `--resolution <n>` | 256 | mesh detail (Poisson depth), 64–768 |
+| `--threshold <f>` | 0.5 | density method only: surface threshold (lower is fuller) |
+| `--smooth <n>` | 3 | mesh smoothing passes (0 = none) |
 | `--faces <n>` | 200000 | mesh target triangle count (0 = all) |
 | `--height <f>` | native | scale so the mesh is this tall in file units |
 | `--no-library` | off | don't add results to the app's library |
@@ -176,6 +187,7 @@ idol-studio-cli library --json                                 # every image and
 idol-studio-cli export result.ply --format glb
 idol-studio-cli export result.ply --format spz,splat,points --out exports/
 idol-studio-cli export a.ply b.ply --format obj,stl --height 100 --json
+idol-studio-cli export thin.ply --format stl --method density
 ```
 
 `--format` takes one or more of `ply,spz,splat,points,glb,obj,stl,mesh-ply`. Inputs are `.ply` files or folders of them (not recursive). `--out` is a file when there is exactly one input and one format, otherwise a folder (default: next to the `.ply`). Mesh options are the same as for `generate` above. Files exported through the CLI are recorded in the app's library, so the open app shows them on the result.
@@ -248,7 +260,7 @@ Layout:
 | `src-tauri/src/bin/idol-studio-cli.rs` | the console CLI binary |
 | `src-tauri/windows/hooks.nsh` | installer hooks: install the CLI next to the app and add/remove its folder on the user PATH |
 | `src-tauri/python/idol_worker.py` | the Python worker. It is compiled into the app and written to the app data folder at runtime |
-| `src-tauri/python/idol_export.py` | splat, point-cloud and mesh export (marching cubes, smoothing, decimation). Also compiled into the app |
+| `src-tauri/python/idol_export.py` | splat, point-cloud and mesh export (Open3D Poisson reconstruction, density field, smoothing, decimation). Also compiled into the app |
 | `.github/workflows/release.yml` | builds and publishes a release when the version is bumped |
 
 The worker reads JSON-line requests on stdin (`hello`, `check_access`, `load`, `preprocess`, `generate`, `export`, `cancel`, `unload`, `quit`) and answers with JSON-line events on stdout. Library output goes to stderr and shows up in the **Log** tab.

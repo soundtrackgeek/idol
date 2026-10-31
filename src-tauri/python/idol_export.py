@@ -3,10 +3,11 @@
 Gaussian splats:  ply (standard 3DGS), spz (Niantic, compressed, converted to its y-up frame), splat
                   (antimatter15, in Idol's PLY frame)
 Point cloud:      points (.ply with xyz + rgb, y-up)
-Mesh:             glb, obj, stl, mesh-ply. The splat is turned into a density field on a grid (each Gaussian
-                  adds opacity x its Gaussian falloff), the surface is extracted with marching cubes, small
-                  floaters are dropped, the mesh is smoothed and decimated, and vertex colours are sampled from a
-                  colour field built the same way.
+Mesh:             glb, obj, stl, mesh-ply. The default uses screened Poisson reconstruction (Open3D) from
+                  the Gaussian centres and their smallest-axis normals, then keeps the largest surface,
+                  smooths, decimates, and colours vertices from the nearest splats. This preserves faces,
+                  eyes and thin parts much better than a density field. `--method density` falls back to
+                  an opacity density grid + marching cubes for very thin or unusual objects.
 
 Mesh formats are turned upright: y-up for glb / obj / mesh-ply, z-up for stl (what slicers expect).
 
@@ -16,6 +17,7 @@ import gzip
 import os
 import shutil
 import struct
+import sys
 import time
 
 import numpy as np
@@ -223,19 +225,113 @@ def sample_colours(colour_grid, points, normals, lo, voxel, offset=0.5):
 
 
 def orient_outward(mesh):
-    """Make the face normals point away from the centre. Marching cubes can wind either way, and a mesh
-    with inward normals both lights wrongly and samples its colours from inside the object."""
-    if mesh.is_watertight:
-        if mesh.volume < 0:
-            mesh.invert()
-    else:
-        d = mesh.triangles_center - mesh.centroid
-        if np.einsum('ij,ij->i', mesh.face_normals, d).mean() < 0:
-            mesh.invert()
+    """Make the face normals point away from the centre. Poisson and marching cubes can wind either way,
+    and a mesh with inward normals both lights wrongly and samples its colours from inside the object."""
+    d = mesh.triangles_center - mesh.centroid
+    if np.einsum('ij,ij->i', mesh.face_normals, d).mean() < 0:
+        mesh.invert()
     mesh._cache.clear()
 
 
-def make_mesh(splats, resolution=256, threshold=0.5, smooth=10, faces=200_000, min_component=0.01, progress=None):
+def apply_material(mesh):
+    """Give GLB a matte material. Without one, glTF viewers apply the spec default (metallic), which
+    makes vertex-coloured meshes look dark or washed out."""
+    from trimesh.visual.material import PBRMaterial
+    mesh.visual.material = PBRMaterial(baseColorFactor=[1.0, 1.0, 1.0, 1.0], metallicFactor=0.0,
+                                      roughnessFactor=0.9, doubleSided=True)
+
+
+def linearize_vertex_colors(mesh):
+    """glTF COLOR_0 is linear; the splat/PLY colours are display (sRGB) bytes. Without this conversion,
+    viewers apply an extra linear-to-sRGB step and the mesh looks pale and washed out."""
+    c = np.asarray(mesh.visual.vertex_colors, dtype=np.float64) / 255.0
+    rgb = np.where(c[:, :3] <= 0.04045, c[:, :3] / 12.92, ((c[:, :3] + 0.055) / 1.055) ** 2.4)
+    mesh.visual.vertex_colors = (np.concatenate([rgb, c[:, 3:4]], axis=1) * 255 + 0.5).astype(np.uint8)
+
+
+def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.3, trim=0.01, smooth=3, faces=200_000,
+                 progress=None):
+    """Screened-Poisson surface from the Gaussian centres, with normals from each Gaussian's smallest
+    axis. This keeps the face, eyes and thin antenna far better than an opacity density field, and the
+    colours come from the nearest splats instead of a blurred voxel average."""
+    import open3d as o3d
+    from scipy.spatial import cKDTree
+
+    stage = progress or (lambda *_: None)
+    if depth is None:
+        depth = {128: 7, 192: 8, 256: 9, 384: 10, 512: 10}.get(int(resolution), 9)
+
+    keep = splats.alpha >= min_alpha
+    if keep.sum() < 100:
+        keep = np.ones(splats.count, dtype=bool)
+    xyz, alpha, scale, rot, rgb = (splats.xyz[keep], splats.alpha[keep], splats.scale[keep],
+                                   splats.rot[keep], splats.rgb[keep])
+    stage('surface', 0.0)
+
+    R = quaternion_to_matrix(rot)
+    axis = np.argmin(scale, axis=1)
+    normals = R[np.arange(len(xyz)), :, axis]
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-9)
+    centre = np.median(xyz, axis=0)
+    normals[np.einsum('ij,ij->i', normals, xyz - centre) < 0] *= -1
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
+    pcd.normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
+    surface, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd, depth=int(depth), scale=1.1, linear_fit=True)
+    densities = np.asarray(densities)
+    if trim > 0:
+        surface.remove_vertices_by_mask(densities < np.quantile(densities, trim))
+    if len(surface.vertices) == 0:
+        raise ValueError('Poisson reconstruction produced an empty mesh')
+
+    import trimesh
+    mesh = trimesh.Trimesh(np.asarray(surface.vertices), np.asarray(surface.triangles), process=True)
+    parts = mesh.split(only_watertight=False)
+    if len(parts) > 1:
+        largest = max(len(p.faces) for p in parts)
+        parts = [p for p in parts if len(p.faces) >= max(0.01 * largest, 50)]
+        mesh = trimesh.util.concatenate(parts)
+
+    if smooth > 0:
+        stage('smooth', 0.0)
+        trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=int(smooth))
+    if faces and len(mesh.faces) > faces:
+        stage('simplify', 0.0)
+        try:
+            mesh = mesh.simplify_quadric_decimation(face_count=int(faces))
+        except Exception as error:  # fast-simplification missing: keep the full mesh
+            print(f'simplify skipped: {error}', file=sys.stderr, flush=True)
+
+    mesh.fix_normals()
+    orient_outward(mesh)
+    stage('colour', 0.0)
+    k = min(12, len(xyz))
+    distances, nearest = cKDTree(xyz).query(mesh.vertices, k=k, workers=-1)
+    if k == 1:
+        colours = rgb[nearest]
+    else:
+        weights = alpha[nearest] / (distances + 1e-5) ** 2
+        colours = (rgb[nearest] * weights[..., None]).sum(axis=1) / weights.sum(axis=1, keepdims=True)
+    mesh.visual.vertex_colors = (np.concatenate([np.clip(colours, 0, 1), np.ones((len(colours), 1))], axis=1)
+                                 * 255 + 0.5).astype(np.uint8)
+    return mesh
+
+
+def make_mesh(splats, resolution=256, threshold=0.5, smooth=3, faces=200_000, min_component=0.01,
+              method='poisson', min_alpha=0.3, trim=0.01, progress=None):
+    if method == 'poisson':
+        try:
+            return poisson_mesh(splats, resolution=resolution, min_alpha=min_alpha, trim=trim, smooth=smooth,
+                                faces=faces, progress=progress)
+        except ImportError:
+            print('open3d is not installed; using the density-field mesh (run setup to install it)',
+                  file=sys.stderr, flush=True)
+        except Exception as error:
+            print(f'Poisson reconstruction failed ({error}); using the density-field mesh', file=sys.stderr,
+                  flush=True)
+
     import trimesh
     from skimage.measure import marching_cubes
 
@@ -269,7 +365,7 @@ def make_mesh(splats, resolution=256, threshold=0.5, smooth=10, faces=200_000, m
         try:
             mesh = mesh.simplify_quadric_decimation(face_count=int(faces))
         except Exception as error:  # fast-simplification missing: keep the full mesh
-            print(f'simplify skipped: {error}', flush=True)
+            print(f'simplify skipped: {error}', file=sys.stderr, flush=True)
 
     mesh.fix_normals()
     orient_outward(mesh)
@@ -303,8 +399,8 @@ def orient_mesh(mesh, fmt, height=None):
 
 # ---------------------------------------------------------------------------------------------------------------
 
-def export(ply_path, fmt, out_path=None, resolution=256, threshold=0.5, smooth=10, faces=200_000, height=None,
-           progress=None):
+def export(ply_path, fmt, out_path=None, resolution=256, threshold=0.5, smooth=3, faces=200_000, height=None,
+           method='poisson', min_alpha=0.3, trim=0.01, progress=None):
     """Export `ply_path` to `fmt`. Returns a dict with the output path and some stats."""
     fmt = fmt.lower()
     if fmt not in FORMATS:
@@ -327,9 +423,13 @@ def export(ply_path, fmt, out_path=None, resolution=256, threshold=0.5, smooth=1
             write_points(splats, out_path)
         else:
             mesh = make_mesh(splats, resolution=int(resolution), threshold=float(threshold), smooth=int(smooth),
-                             faces=int(faces) if faces else 0, progress=progress)
+                             faces=int(faces) if faces else 0, method=method, min_alpha=min_alpha, trim=trim,
+                             progress=progress)
             mesh = orient_mesh(mesh, fmt, height)
             if fmt == 'glb':
+                linearize_vertex_colors(mesh)
+                apply_material(mesh)
+                _ = mesh.vertex_normals
                 mesh.export(out_path, file_type='glb')
             elif fmt == 'obj':
                 mesh.export(out_path, file_type='obj', include_color=True)
@@ -354,11 +454,15 @@ if __name__ == '__main__':
     parser.add_argument('--format')
     parser.add_argument('--resolution', type=int, default=256)
     parser.add_argument('--threshold', type=float, default=0.5)
-    parser.add_argument('--smooth', type=int, default=10)
+    parser.add_argument('--smooth', type=int, default=3)
     parser.add_argument('--faces', type=int, default=200_000)
     parser.add_argument('--height', type=float)
+    parser.add_argument('--method', choices=['poisson', 'density'], default='poisson')
+    parser.add_argument('--min-alpha', type=float, default=0.3)
+    parser.add_argument('--trim', type=float, default=0.01)
     a = parser.parse_args()
     fmt = a.format or next((f for f, ext in EXTENSIONS.items() if a.out.lower().endswith(ext) and f != 'ply'),
                            os.path.splitext(a.out)[1][1:])
-    print(json.dumps(export(a.ply, fmt, a.out, a.resolution, a.threshold, a.smooth, a.faces, a.height,
+    print(json.dumps(export(a.ply, fmt, a.out, resolution=a.resolution, threshold=a.threshold, smooth=a.smooth,
+                            faces=a.faces, height=a.height, method=a.method, min_alpha=a.min_alpha, trim=a.trim,
                             progress=lambda s, f: None)))

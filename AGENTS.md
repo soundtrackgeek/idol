@@ -34,7 +34,7 @@
 - To generate splats yourself (testing, demos), use the CLI rather than driving the GUI: `src-tauri/target/<profile>/idol-studio-cli.exe generate <image> --json`. Run `serve` first when generating more than once. `idol-studio-cli --help` lists everything.
 - Node.js comes from fnm. Load it in the same command as npm, e.g. in PowerShell: `fnm env --use-on-cd --shell powershell | Out-String | Invoke-Expression; npm run build`.
 - `src-tauri/python/idol_worker.py` and `idol_export.py` are embedded in the binary with `include_str!`. Changing either requires rebuilding the Rust side.
-- Test exports through the CLI, not the GUI: `idol-studio-cli export result.ply --format glb,spz,stl --out <dir> --json`. Check `.spz` with an SPZ viewer and `.stl` in a slicer; mesh colours and normals matter.
+- Test exports through the CLI, not the GUI: `idol-studio-cli export result.ply --format glb,spz,stl --out <dir> --json`. Check `.spz` with an SPZ viewer, `.stl` in a slicer, and `.glb` in Blender or Windows 3D Viewer. GLB vertex colours are written in glTF's linear space with a matte material; changing either will wash the model out.
 - The worker must never leave a blocking read pending on stdin on Windows: DLL loads (`import torch`) hang while one is pending. Keep the `PeekNamedPipe` reader.
 - Keep stdout of the worker for JSON events only. Everything else goes to stderr.
 - Never commit `.env.local` (it holds the Hugging Face token).
