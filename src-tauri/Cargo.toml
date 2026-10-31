@@ -1,6 +1,6 @@
 [package]
 name = "idol-studio"
-version = "0.1.0"
+version = "0.1.1"
 description = "Idol Studio: turn single images into 3D Gaussian splats with Idol"
 authors = ["Jørn Tillnes"]
 edition = "2021"

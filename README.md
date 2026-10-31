@@ -4,7 +4,11 @@ A Windows desktop studio for [Idol](https://github.com/speridlabs/idol-sdk), the
 
 Built with Rust + Tauri 2. Idol itself runs in a Python worker process that the app starts and keeps loaded on the GPU.
 
-![Idol Studio](branding/icon.png)
+![Idol Studio](docs/screenshot.jpg)
+
+The three test images in `samples/`, generated with the default settings and seen from the front, side and back. Each took about 70 s on an RTX 4060 Ti:
+
+![Results](docs/results.jpg)
 
 ## Features
 
@@ -21,7 +25,7 @@ Built with Rust + Tauri 2. Idol itself runs in a Python worker process that the 
 - **Variants**: generate several consecutive seeds per image in one go.
 - **Queue**: generate one image or every image in the list. Shows live sampling progress, and any job can be cancelled.
 - **Preview crop**: see the background removal and crop the model will get, before generating. This loads only BiRefNet, so it's quick.
-- **3D viewer**: orbit, pan and zoom the splat, with auto-rotate, flip and background options. The source image and the model input are on their own tabs.
+- **3D viewer**: orbit, pan and zoom the splat, with auto-rotate, flip and background options. It opens from Idol's predicted input camera, so you first see the object from the same angle as the source image. The source image and the model input are on their own tabs.
 - **Results**: every run is kept per image with its settings, time and VRAM peak. You can open the `.ply`, show it in Explorer, copy its settings back to the panel, or delete it.
 - **One-click Python setup**: creates a private environment with CUDA PyTorch, Idol and Triton.
 - **Automatic update check**: on start, every 30 minutes while open, and on demand. New versions download and install from GitHub Releases.
@@ -50,7 +54,17 @@ Download the latest release from [Releases](https://github.com/soundtrackgeek/id
 2. Paste a Hugging Face **access token** into Settings, then press **Check access**. Each gated repo should show ✔.
    - Fine-grained tokens need *"Read access to contents of all public gated repos you can access"*.
    - If the field is empty, the token from `hf auth login` or the `HF_TOKEN` variable is used.
-3. Add an image and press **Generate**. The first generation downloads the weights and compiles the sampler, so it takes a few minutes. Later ones take seconds.
+3. Add an image and press **Generate**. The first generation downloads the weights (~10 GB) and compiles the sampler, so it takes a few minutes.
+
+Typical times on an RTX 4060 Ti 16 GB (262,144 Gaussians, 50 steps):
+
+| | |
+|---|---|
+| loading the model (weights cached) | ~40 s, once per session |
+| first image after loading (compiling) | ~85 s |
+| each image after that | ~70 s, about 1.4 s per step, 5 GB VRAM peak |
+
+Fewer steps is the quickest way to trade quality for speed. Faster sampling (torch.compile) makes sampling about 1.5× faster once compiled.
 
 Output goes to `Documents\Idol Studio\<image name>\` (you can change this in Settings). Each run writes:
 

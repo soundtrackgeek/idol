@@ -2,6 +2,18 @@
 
 All notable changes to Idol Studio are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-31
+
+### Fixed
+
+- Splats loaded upside down in the viewer. Idol saves y-up objects, while Spark uses the y-down convention of captured 3DGS scenes, so the splat is now turned upright by default. "Flip" undoes that for files in the other convention.
+- A result that finished after the page reloaded mid-run was lost. The worker now reports the image and settings with each result, so the result is still filed under its image.
+
+### Changed
+
+- The viewer opens a splat from Idol's predicted input camera, so you first see it from the same angle as the source image.
+- Environment setup also installs `accelerate`, for faster model loading with less RAM.
+
 ## [0.1.0] - 2026-10-31
 
 ### Added

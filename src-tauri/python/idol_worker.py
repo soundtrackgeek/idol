@@ -343,7 +343,10 @@ def cmd_generate(request):
     output.preprocessed_image.save(preprocessed)
     with open(camera_path, 'w') as f:
         json.dump(output.camera, f, indent=2)
-    send('done', id=job_id, ply=ply, preprocessed=preprocessed, camera_path=camera_path, camera=output.camera,
+    params = {key: request.get(key) for key in ('mode', 'crop_margin', 'seed', 'steps', 'cfg_strength', 'rescale_t',
+                                                'num_gaussians')}
+    send('done', id=job_id, image=request['image'], params=params, ply=ply, preprocessed=preprocessed,
+         camera_path=camera_path, camera=output.camera,
          seconds=round(seconds, 2), num_gaussians=int(output.gaussian.xyz.shape[0]), **gpu_memory())
 
 

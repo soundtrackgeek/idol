@@ -245,6 +245,7 @@ function onWorkerEvent(event: WorkerEvent) {
       break;
     case "done":
       if (job) finishGenerate(job, event);
+      else adoptResult(event);
       break;
     case "preprocessed":
       if (job) finishPreprocess(job, event);
@@ -296,6 +297,18 @@ function finishGenerate(job: Job, event: WorkerEvent) {
   } else {
     renderLibrary();
   }
+}
+
+/** A result for a job this page doesn't know (e.g. the page was reloaded mid-run): file it under its image. */
+function adoptResult(event: WorkerEvent) {
+  const image = library.find((i) => i.path === event.image);
+  if (!image || !event.params) return;
+  const job: Job = {
+    id: event.id ?? uid(), kind: "generate", imageId: image.id, imageName: image.name, params: event.params,
+    status: "running", stage: "", step: 0, total: 0, message: "",
+  };
+  jobs.push(job);
+  finishGenerate(job, event);
 }
 
 function finishPreprocess(job: Job, event: WorkerEvent) {
@@ -558,14 +571,15 @@ async function showResult(result: Result) {
   $("viewer-loading").classList.remove("hidden");
   $("viewer-stats").textContent = "";
   try {
-    const bytes = await invoke<ArrayBuffer>("read_file_bytes", { path: result.ply });
-    const count = await viewer.load(bytes);
-    if (count === null) return;
-    let camera = "";
+    let cam: { yaw: number; pitch: number; fov: number } | null = null;
     try {
-      const cam = JSON.parse(await invoke<string>("read_text_file", { path: result.camera_path }));
-      camera = ` · camera yaw ${(cam.yaw * 180 / Math.PI).toFixed(0)}°, pitch ${(cam.pitch * 180 / Math.PI).toFixed(0)}°, fov ${cam.fov.toFixed(1)}°`;
+      cam = JSON.parse(await invoke<string>("read_text_file", { path: result.camera_path }));
     } catch {}
+    const bytes = await invoke<ArrayBuffer>("read_file_bytes", { path: result.ply });
+    const count = await viewer.load(bytes, cam);
+    if (count === null) return;
+    const deg = (r: number) => ((r * 180) / Math.PI).toFixed(0);
+    const camera = cam ? ` · input camera yaw ${deg(cam.yaw)}°, pitch ${deg(cam.pitch)}°` : "";
     $("viewer-stats").textContent = `${fmt(count || result.num_gaussians)} splats · ${(bytes.byteLength / 2 ** 20).toFixed(1)} MB${camera}`;
   } catch (error) {
     viewer.clear();

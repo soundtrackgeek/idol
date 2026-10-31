@@ -84,8 +84,8 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
         run(app, &uv, &["venv", "--allow-existing", "--python", "3.12", &env_str])?;
         log(app, "Installing PyTorch with CUDA 12.8 (about 3 GB, this takes a while)...");
         run(app, &uv, &["pip", "install", "--python", &python_str, "torch", "torchvision", "--index-url", TORCH_INDEX])?;
-        log(app, "Installing Idol and Triton...");
-        let mut args = vec!["pip", "install", "--python", &python_str, IDOL_PACKAGE];
+        log(app, "Installing Idol, Triton and accelerate...");
+        let mut args = vec!["pip", "install", "--python", &python_str, IDOL_PACKAGE, "accelerate"];
         if cfg!(windows) {
             args.push("triton-windows");
         }
@@ -111,8 +111,8 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
         run(app, &python, &["-m", "pip", "install", "--upgrade", "pip"])?;
         log(app, "Installing PyTorch with CUDA 12.8 (about 3 GB, this takes a while)...");
         run(app, &python, &["-m", "pip", "install", "torch", "torchvision", "--index-url", TORCH_INDEX])?;
-        log(app, "Installing Idol and Triton...");
-        let mut args = vec!["-m", "pip", "install", IDOL_PACKAGE];
+        log(app, "Installing Idol, Triton and accelerate...");
+        let mut args = vec!["-m", "pip", "install", IDOL_PACKAGE, "accelerate"];
         if cfg!(windows) {
             args.push("triton-windows");
         }
