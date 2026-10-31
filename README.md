@@ -96,7 +96,7 @@ Select a result and press **Export...**. Splat and point-cloud formats are quick
 | `.ply` mesh | mesh | vertex colours, y-up, for MeshLab |
 | `.stl` | mesh | z-up, centred and standing on z=0, for slicers |
 
-Mesh exports default to **screened Poisson reconstruction** from the Gaussian centres. It fits a smooth surface through the splats and keeps faces, eyes and thin parts far better than a voxel density field; vertex colours come from the nearest splats. The **density field** method is there for very thin or unusual objects. Both methods give the GLB a matte material and convert the colours to glTF's linear space, because glTF's defaults otherwise make vertex-coloured meshes look pale or metallic.
+Mesh exports default to **screened Poisson reconstruction** from the Gaussian centres. It fits a smooth surface through the splats and keeps faces, eyes and thin parts far better than a voxel density field; vertex colours come from the nearest splats. Faint splats are kept (the sides Idol invents, like the back of an object, are made of them), and the skin Poisson stretches across real gaps, such as between legs, is cut away where no splat is near. The **density field** method is there for very thin or unusual objects. Both methods give the GLB a matte material and convert the colours to glTF's linear space, because glTF's defaults otherwise make vertex-coloured meshes look pale or metallic.
 
 Mesh options:
 

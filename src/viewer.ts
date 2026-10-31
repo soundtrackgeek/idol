@@ -165,7 +165,7 @@ export class SplatViewer {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       const hasColors = !!m.geometry.getAttribute("color");
-      m.material = new THREE.MeshStandardMaterial({ vertexColors: hasColors, roughness: 0.75, metalness: 0.0 });
+      m.material = new THREE.MeshStandardMaterial({ vertexColors: hasColors, roughness: 0.75, metalness: 0.0, side: THREE.DoubleSide });
       if (!m.geometry.getAttribute("normal")) m.geometry.computeVertexNormals();
       triangles += (m.geometry.index?.count ?? m.geometry.getAttribute("position").count) / 3;
     });

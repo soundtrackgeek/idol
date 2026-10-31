@@ -2,6 +2,14 @@
 
 All notable changes to Idol Studio are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-31
+
+### Fixed
+
+- Mesh exports had holes on the sides Idol invents (for example the back of a figure's head) and around feet and hands. Those sides are made of fainter splats, which the Poisson mesh dropped, and a density-based trim then cut the thin areas open. The mesh now keeps faint splats and only removes triangles that are far from any splat, so it stays closed where the object is and still separates parts with real gaps between them (legs).
+- Mesh exports no longer contain dozens to hundreds of loose fragments; small pieces left after simplification are removed.
+- The mesh preview in the viewer draws both sides of each triangle, so small cracks no longer show the background through the model.
+
 ## [0.4.0] - 2026-10-31
 
 ### Added

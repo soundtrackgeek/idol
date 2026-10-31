@@ -249,11 +249,16 @@ def linearize_vertex_colors(mesh):
     mesh.visual.vertex_colors = (np.concatenate([rgb, c[:, 3:4]], axis=1) * 255 + 0.5).astype(np.uint8)
 
 
-def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.3, trim=0.01, smooth=3, faces=200_000,
+def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.05, trim=0.01, smooth=3, faces=200_000,
                  progress=None):
     """Screened-Poisson surface from the Gaussian centres, with normals from each Gaussian's smallest
     axis. This keeps the face, eyes and thin antenna far better than an opacity density field, and the
-    colours come from the nearest splats instead of a blurred voxel average."""
+    colours come from the nearest splats instead of a blurred voxel average.
+
+    min_alpha is low on purpose: the sides Idol invents (the back of an object) are made of fainter splats,
+    and dropping them leaves holes there. Poisson closes every surface, so afterwards triangles farther than
+    `trim` x the object size from any splat are removed: that cuts the skin Poisson stretches across real
+    gaps (between legs, under handles) without opening holes where there are splats."""
     import open3d as o3d
     from scipy.spatial import cKDTree
 
@@ -280,14 +285,18 @@ def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.3, trim=0.01, s
     pcd.normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
     surface, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd, depth=int(depth), scale=1.1, linear_fit=True)
-    densities = np.asarray(densities)
-    if trim > 0:
-        surface.remove_vertices_by_mask(densities < np.quantile(densities, trim))
     if len(surface.vertices) == 0:
         raise ValueError('Poisson reconstruction produced an empty mesh')
 
     import trimesh
     mesh = trimesh.Trimesh(np.asarray(surface.vertices), np.asarray(surface.triangles), process=True)
+    tree = cKDTree(xyz)
+    if trim > 0:
+        size = float(np.ptp(xyz, axis=0).max())
+        far = tree.query(mesh.triangles_center, workers=-1)[0] > trim * size
+        if far.any() and not far.all():
+            mesh.update_faces(~far)
+            mesh.remove_unreferenced_vertices()
     parts = mesh.split(only_watertight=False)
     if len(parts) > 1:
         largest = max(len(p.faces) for p in parts)
@@ -303,12 +312,17 @@ def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.3, trim=0.01, s
             mesh = mesh.simplify_quadric_decimation(face_count=int(faces))
         except Exception as error:  # fast-simplification missing: keep the full mesh
             print(f'simplify skipped: {error}', file=sys.stderr, flush=True)
+    # Decimation can leave crumbs; keep only real pieces.
+    parts = mesh.split(only_watertight=False)
+    if len(parts) > 1:
+        largest = max(len(p.faces) for p in parts)
+        mesh = trimesh.util.concatenate([p for p in parts if len(p.faces) >= max(0.01 * largest, 50)])
 
     mesh.fix_normals()
     orient_outward(mesh)
     stage('colour', 0.0)
     k = min(12, len(xyz))
-    distances, nearest = cKDTree(xyz).query(mesh.vertices, k=k, workers=-1)
+    distances, nearest = tree.query(mesh.vertices, k=k, workers=-1)
     if k == 1:
         colours = rgb[nearest]
     else:
@@ -320,7 +334,7 @@ def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.3, trim=0.01, s
 
 
 def make_mesh(splats, resolution=256, threshold=0.5, smooth=3, faces=200_000, min_component=0.01,
-              method='poisson', min_alpha=0.3, trim=0.01, progress=None):
+              method='poisson', min_alpha=0.05, trim=0.01, progress=None):
     if method == 'poisson':
         try:
             return poisson_mesh(splats, resolution=resolution, min_alpha=min_alpha, trim=trim, smooth=smooth,
@@ -400,7 +414,7 @@ def orient_mesh(mesh, fmt, height=None):
 # ---------------------------------------------------------------------------------------------------------------
 
 def export(ply_path, fmt, out_path=None, resolution=256, threshold=0.5, smooth=3, faces=200_000, height=None,
-           method='poisson', min_alpha=0.3, trim=0.01, progress=None):
+           method='poisson', min_alpha=0.05, trim=0.01, progress=None):
     """Export `ply_path` to `fmt`. Returns a dict with the output path and some stats."""
     fmt = fmt.lower()
     if fmt not in FORMATS:
@@ -458,7 +472,7 @@ if __name__ == '__main__':
     parser.add_argument('--faces', type=int, default=200_000)
     parser.add_argument('--height', type=float)
     parser.add_argument('--method', choices=['poisson', 'density'], default='poisson')
-    parser.add_argument('--min-alpha', type=float, default=0.3)
+    parser.add_argument('--min-alpha', type=float, default=0.05)
     parser.add_argument('--trim', type=float, default=0.01)
     a = parser.parse_args()
     fmt = a.format or next((f for f, ext in EXTENSIONS.items() if a.out.lower().endswith(ext) and f != 'ply'),
