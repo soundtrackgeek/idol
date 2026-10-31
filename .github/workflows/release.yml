@@ -1,0 +1,107 @@
+name: Release
+
+# Every push to master checks the version in src-tauri/Cargo.toml. If there is no GitHub release for that
+# version yet (that is: the version was bumped), the app is built on Windows and released with the installer
+# and the portable .exe attached. The app's update check reads these releases.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      exists: ${{ steps.exists.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version=$(grep -m1 '^version = ' src-tauri/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version in Cargo.toml: $version"
+      - id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release v${{ steps.version.outputs.version }} already exists, nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.exists == 'false'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npx tauri build --bundles nsis
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          Copy-Item $setup.FullName "release/IdolStudio_${env:VERSION}_x64-setup.exe"
+          Copy-Item "src-tauri/target/release/idol-studio.exe" "release/IdolStudio_${env:VERSION}_x64-portable.exe"
+          Get-ChildItem release
+
+      - name: Release notes from CHANGELOG.md
+        shell: pwsh
+        run: |
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[$([regex]::Escape($env:VERSION))\]").LineNumber
+          $notes = @()
+          if ($start) {
+            foreach ($line in $lines[$start..($lines.Count - 1)]) {
+              if ($line -match '^## \[') { break }
+              $notes += $line
+            }
+          }
+          if (-not $notes) { $notes = @("Idol Studio $env:VERSION") }
+          $notes += ""
+          $notes += "**Download:** ``IdolStudio_${env:VERSION}_x64-setup.exe`` (installer) or ``IdolStudio_${env:VERSION}_x64-portable.exe`` (no install)."
+          $notes | Set-Content -Encoding utf8 release-notes.md
+          Get-Content release-notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "v$env:VERSION" `
+            --repo "${{ github.repository }}" `
+            --target "${{ github.sha }}" `
+            --title "Idol Studio v$env:VERSION" `
+            --notes-file release-notes.md `
+            "release/IdolStudio_${env:VERSION}_x64-setup.exe" `
+            "release/IdolStudio_${env:VERSION}_x64-portable.exe"

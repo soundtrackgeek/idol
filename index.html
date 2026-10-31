@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Idol Studio</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="/icon.png" alt="" />
+        <span>Idol Studio</span>
+        <span class="version" id="app-version"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill" id="worker-pill" title="Python worker">Worker: stopped</span>
+        <button class="ghost" id="btn-check-updates" title="Check for updates">Check for updates</button>
+        <button class="ghost" id="btn-settings">Settings</button>
+      </div>
+    </header>
+
+    <div class="banner hidden" id="update-banner">
+      <span id="update-text"></span>
+      <div class="banner-actions">
+        <button class="primary small" id="btn-install-update">Download and install</button>
+        <button class="ghost small" id="btn-update-notes">Release notes</button>
+        <button class="ghost small" id="btn-update-later">Later</button>
+      </div>
+    </div>
+    <div class="banner warn hidden" id="env-banner">
+      <span id="env-text">The Python environment for Idol is not set up yet.</span>
+      <div class="banner-actions"><button class="primary small" id="btn-env-open">Set up environment</button></div>
+    </div>
+
+    <main class="layout">
+      <!-- Left: image library -->
+      <aside class="panel left">
+        <div class="panel-head">
+          <h2>Images</h2>
+          <div class="row gap">
+            <button class="small" id="btn-add-images">Add images</button>
+            <button class="small ghost" id="btn-add-folder">Add folder</button>
+          </div>
+        </div>
+        <div class="dropzone" id="dropzone">Drop images or folders here</div>
+        <ul class="image-list" id="image-list"></ul>
+      </aside>
+
+      <!-- Center: viewer and results -->
+      <section class="center">
+        <div class="tabs">
+          <button class="tab active" data-tab="3d">3D splat</button>
+          <button class="tab" data-tab="input">Source image</button>
+          <button class="tab" data-tab="pre">Model input</button>
+          <div class="spacer"></div>
+          <div class="viewer-tools" id="viewer-tools">
+            <label class="check"><input type="checkbox" id="vt-rotate" /> Auto-rotate</label>
+            <label class="check" title="Turn the splat upside down if it loads flipped"><input type="checkbox" id="vt-flip" /> Flip</label>
+            <select id="vt-bg" title="Background">
+              <option value="#15161c">Dark</option>
+              <option value="#808080">Grey</option>
+              <option value="#f2f2f2">Light</option>
+            </select>
+            <button class="small ghost" id="vt-reset">Reset view</button>
+          </div>
+        </div>
+        <div class="stage">
+          <div class="view" id="view-3d">
+            <div class="viewer-host" id="viewer-host"></div>
+            <div class="viewer-empty" id="viewer-empty">Generate a splat to see it here.<br /><small>Drag to orbit, right-drag to pan, scroll to zoom.</small></div>
+            <div class="viewer-loading hidden" id="viewer-loading">Loading splat...</div>
+            <div class="viewer-stats" id="viewer-stats"></div>
+          </div>
+          <div class="view hidden" id="view-input"><img id="img-input" alt="" /></div>
+          <div class="view hidden checker" id="view-pre"><img id="img-pre" alt="" /><div class="viewer-empty" id="pre-empty">No model input yet. Use "Preview crop" or generate.</div></div>
+        </div>
+        <div class="results">
+          <div class="results-head">
+            <h3>Results <span class="muted" id="results-for"></span></h3>
+            <div class="row gap">
+              <button class="small ghost" id="btn-open-ply" disabled>Open .ply</button>
+              <button class="small ghost" id="btn-reveal" disabled>Show in folder</button>
+              <button class="small ghost" id="btn-use-params" disabled title="Copy this result's settings to the panel">Use these settings</button>
+              <button class="small ghost danger" id="btn-delete-result" disabled>Delete</button>
+            </div>
+          </div>
+          <div class="result-strip" id="result-strip"></div>
+        </div>
+      </section>
+
+      <!-- Right: generation options -->
+      <aside class="panel right">
+        <div class="panel-head"><h2>Generation</h2><button class="small ghost" id="btn-defaults">Defaults</button></div>
+        <div class="form">
+          <div class="field">
+            <label>Mode</label>
+            <div class="segmented" id="opt-mode">
+              <button data-value="synthetic" class="active" title="Renders and generated images (crop 1.2)">Synthetic</button>
+              <button data-value="real" title="Real-world photos (crop 1.7)">Real photo</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="check"><input type="checkbox" id="opt-crop-auto" checked /> Crop margin from mode</label>
+            <div class="slider-row">
+              <input type="range" id="opt-crop" min="1.0" max="2.5" step="0.05" value="1.2" disabled />
+              <output id="out-crop">1.20</output>
+            </div>
+            <small class="hint">Square crop side = object bounding box &times; margin.</small>
+          </div>
+          <div class="field">
+            <label for="opt-seed">Seed</label>
+            <div class="row gap">
+              <input type="number" id="opt-seed" value="42" min="0" step="1" />
+              <button class="small ghost" id="btn-dice" title="Random seed">Random</button>
+            </div>
+            <label class="check"><input type="checkbox" id="opt-seed-random" /> New random seed every run</label>
+          </div>
+          <div class="field">
+            <label for="opt-variants">Variants</label>
+            <div class="slider-row">
+              <input type="range" id="opt-variants" min="1" max="8" step="1" value="1" />
+              <output id="out-variants">1</output>
+            </div>
+            <small class="hint">Runs consecutive seeds per image.</small>
+          </div>
+          <div class="field">
+            <label for="opt-gaussians">Gaussians</label>
+            <select id="opt-gaussians">
+              <option value="32768">32,768</option>
+              <option value="65536">65,536</option>
+              <option value="131072">131,072</option>
+              <option value="262144" selected>262,144 (default)</option>
+              <option value="524288">524,288</option>
+              <option value="1048576">1,048,576</option>
+            </select>
+          </div>
+          <details class="advanced" open>
+            <summary>Sampler</summary>
+            <div class="field">
+              <label for="opt-steps">Steps</label>
+              <div class="slider-row"><input type="range" id="opt-steps" min="5" max="100" step="1" value="50" /><output id="out-steps">50</output></div>
+            </div>
+            <div class="field">
+              <label for="opt-cfg">Guidance (CFG)</label>
+              <div class="slider-row"><input type="range" id="opt-cfg" min="0" max="10" step="0.1" value="3.0" /><output id="out-cfg">3.0</output></div>
+            </div>
+            <div class="field">
+              <label for="opt-shift">Time shift</label>
+              <div class="slider-row"><input type="range" id="opt-shift" min="1" max="8" step="0.1" value="3.0" /><output id="out-shift">3.0</output></div>
+              <small class="hint">Higher spends more steps at high noise.</small>
+            </div>
+          </details>
+          <details class="advanced">
+            <summary>Model</summary>
+            <div class="field">
+              <label for="opt-dtype">DINOv3 precision</label>
+              <select id="opt-dtype">
+                <option value="bf16">bf16 (default)</option>
+                <option value="fp32">fp32 (+1.7 GB VRAM)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="check"><input type="checkbox" id="opt-optimize" checked /> Faster sampling (torch.compile)</label>
+              <small class="hint">The first image after loading is slower while it compiles.</small>
+            </div>
+            <div class="field">
+              <label for="opt-weights">Weights</label>
+              <div class="row gap">
+                <input type="text" id="opt-weights" value="speridlabs/idol" />
+                <button class="small ghost" id="btn-weights-browse" title="Use a local folder">...</button>
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="actions">
+          <button class="ghost" id="btn-preview">Preview crop</button>
+          <button class="primary" id="btn-generate">Generate</button>
+          <button class="ghost" id="btn-generate-all" title="Queue every image in the list">Generate all</button>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Bottom: queue and log -->
+    <footer class="dock">
+      <div class="dock-tabs">
+        <button class="tab active" data-dock="queue">Queue <span class="badge" id="queue-count">0</span></button>
+        <button class="tab" data-dock="log">Log</button>
+        <div class="spacer"></div>
+        <button class="small ghost" id="btn-clear-done">Clear finished</button>
+        <button class="small ghost" id="btn-cancel-all">Cancel all</button>
+        <button class="small ghost" id="btn-unload" title="Free GPU memory">Unload model</button>
+        <button class="small ghost danger" id="btn-stop-worker">Stop worker</button>
+      </div>
+      <div class="dock-body">
+        <ul class="queue" id="queue"></ul>
+        <pre class="log hidden" id="log"></pre>
+      </div>
+    </footer>
+
+    <!-- Settings dialog -->
+    <dialog id="settings">
+      <form method="dialog" class="dialog">
+        <div class="dialog-head"><h2>Settings</h2><button class="ghost small" value="close">Close</button></div>
+
+        <section>
+          <h3>Python environment</h3>
+          <p class="muted" id="env-status">Checking...</p>
+          <div class="row gap">
+            <button type="button" class="primary small" id="btn-setup-env">Set up / repair environment</button>
+            <button type="button" class="ghost small" id="btn-test-env">Test environment</button>
+          </div>
+          <pre class="log small hidden" id="setup-log"></pre>
+          <div class="field">
+            <label for="set-python">Python interpreter (optional)</label>
+            <div class="row gap">
+              <input type="text" id="set-python" placeholder="Empty: use the managed environment" />
+              <button type="button" class="small ghost" id="btn-python-browse">...</button>
+            </div>
+            <small class="hint">Point at a python.exe that already has Idol installed, or leave empty.</small>
+          </div>
+        </section>
+
+        <section>
+          <h3>Hugging Face access</h3>
+          <p class="muted">Idol uses two gated encoders. Accept the terms for
+            <a href="#" data-url="https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m">DINOv3 ViT-H+</a> and
+            <a href="#" data-url="https://huggingface.co/black-forest-labs/FLUX.2-dev">FLUX.2-dev</a>
+            with your account, then add a token.</p>
+          <div class="field">
+            <label for="set-token">Access token</label>
+            <div class="row gap">
+              <input type="password" id="set-token" placeholder="hf_... (empty: use hf auth login / HF_TOKEN)" autocomplete="off" />
+              <button type="button" class="small ghost" id="btn-token-show">Show</button>
+            </div>
+          </div>
+          <div class="row gap"><button type="button" class="small" id="btn-check-access">Check access</button></div>
+          <ul class="access" id="access-list"></ul>
+        </section>
+
+        <section>
+          <h3>Output</h3>
+          <div class="field">
+            <label for="set-output">Output folder</label>
+            <div class="row gap">
+              <input type="text" id="set-output" placeholder="Documents\Idol Studio" />
+              <button type="button" class="small ghost" id="btn-output-browse">...</button>
+              <button type="button" class="small ghost" id="btn-output-open">Open</button>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h3>Updates</h3>
+          <label class="check"><input type="checkbox" id="set-updates" checked /> Check for updates on start and every 30 minutes</label>
+          <div class="row gap">
+            <button type="button" class="small" id="btn-check-updates-2">Check now</button>
+            <span class="muted" id="update-status"></span>
+          </div>
+        </section>
+
+        <div class="dialog-foot">
+          <span class="muted" id="settings-saved"></span>
+          <button type="button" class="primary" id="btn-save-settings">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
