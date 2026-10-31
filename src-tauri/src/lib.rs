@@ -1,3 +1,7 @@
+pub mod cli;
+mod library;
+mod paths;
+mod process;
 mod settings;
 mod setup;
 mod updater;
@@ -20,13 +24,16 @@ struct AppInfo {
     python_exists: bool,
     output_dir: String,
     worker_script: String,
+    /// The console CLI next to the app (installed builds), or the app exe itself, which takes the same commands.
+    cli_path: String,
+    cli_installed: bool,
 }
 
 #[tauri::command]
 fn app_info(app: AppHandle) -> Result<AppInfo, String> {
-    let settings = settings::load(&app);
-    let env = settings::env_dir(&app)?;
-    let python = settings::python(&app, &settings)?;
+    let settings = settings::load();
+    let env = settings::env_dir()?;
+    let python = settings::python(&settings)?;
     Ok(AppInfo {
         version: app.package_info().version.to_string(),
         repo: updater::REPO.into(),
@@ -34,21 +41,33 @@ fn app_info(app: AppHandle) -> Result<AppInfo, String> {
         env_dir: env.display().to_string(),
         python_exists: python.exists(),
         python: python.display().to_string(),
-        output_dir: settings::output_dir(&app, &settings)?.display().to_string(),
-        worker_script: worker::script_path(&app).map(|p| p.display().to_string()).unwrap_or_default(),
+        output_dir: settings::output_dir(&settings)?.display().to_string(),
+        worker_script: process::script_path().map(|p| p.display().to_string()).unwrap_or_default(),
+        cli_installed: cli_path().1,
+        cli_path: cli_path().0,
     })
 }
 
+fn cli_path() -> (String, bool) {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let cli = exe.with_file_name(if cfg!(windows) { "idol-studio-cli.exe" } else { "idol-studio-cli" });
+    if cli.exists() {
+        (cli.display().to_string(), true)
+    } else {
+        (exe.display().to_string(), false)
+    }
+}
+
 #[tauri::command]
-fn get_settings(app: AppHandle) -> Settings {
-    settings::load(&app)
+fn get_settings() -> Settings {
+    settings::load()
 }
 
 /// Save settings. The worker is restarted if something it was started with changed.
 #[tauri::command]
 fn save_settings(app: AppHandle, new_settings: Settings) -> Result<(), String> {
-    let old = settings::load(&app);
-    settings::save(&app, &new_settings)?;
+    let old = settings::load();
+    settings::save(&new_settings)?;
     if old.python_path != new_settings.python_path || old.hf_token != new_settings.hf_token {
         if let Ok(mut worker) = app.state::<worker::WorkerState>().0.lock() {
             worker.stop();
@@ -120,6 +139,7 @@ pub fn run() {
         .manage(worker::WorkerState::default())
         .setup(|app| {
             updater::spawn_periodic_checks(app.handle().clone());
+            library::watch(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -132,6 +152,9 @@ pub fn run() {
             list_images,
             is_dir,
             delete_outputs,
+            library::library_load,
+            library::library_save,
+            library::library_import,
             worker::worker_send,
             worker::worker_stop,
             worker::worker_running,

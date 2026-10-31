@@ -251,6 +251,16 @@
         </section>
 
         <section>
+          <h3>Command line</h3>
+          <p class="muted">Generate from a terminal, a script or an AI agent, with the same settings and library as the app. Results show up here right away.</p>
+          <div class="row gap">
+            <input type="text" id="cli-path" readonly />
+            <button type="button" class="small ghost" id="btn-cli-copy">Copy</button>
+          </div>
+          <small class="hint" id="cli-hint"></small>
+        </section>
+
+        <section>
           <h3>Updates</h3>
           <label class="check"><input type="checkbox" id="set-updates" checked /> Check for updates on start and every 30 minutes</label>
           <div class="row gap">

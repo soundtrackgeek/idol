@@ -3,11 +3,10 @@
 //! Requests go to its stdin as JSON lines. Its stdout (JSON events) is forwarded to the UI as `worker-event`,
 //! its stderr (library logs) as `worker-log`, and its exit as `worker-exit`.
 
-use crate::settings;
+use crate::{process, settings};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -19,33 +18,6 @@ pub struct Worker {
 
 #[derive(Default)]
 pub struct WorkerState(pub Mutex<Worker>);
-
-/// Hide the console window that Windows would open for a console program.
-pub fn no_window(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    let _ = cmd;
-}
-
-/// The worker script is compiled into the app and written to the app data folder, so the installer and the
-/// portable .exe behave the same.
-const WORKER_SOURCE: &str = include_str!("../python/idol_worker.py");
-
-pub fn script_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("worker");
-    let path = dir.join("idol_worker.py");
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current != WORKER_SOURCE {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(&path, WORKER_SOURCE).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    }
-    Ok(path)
-}
 
 impl Worker {
     fn running(&mut self) -> bool {
@@ -59,30 +31,8 @@ impl Worker {
         if self.running() {
             return Ok(());
         }
-        let settings = settings::load(app);
-        let python = settings::python(app, &settings)?;
-        if !python.exists() {
-            return Err(format!(
-                "Python was not found at {}. Open Settings and run \"Set up environment\", or choose a Python that has Idol installed.",
-                python.display()
-            ));
-        }
-        let script = script_path(app)?;
-        let mut cmd = Command::new(&python);
-        cmd.arg("-u")
-            .arg(&script)
-            .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONIOENCODING", "utf-8")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if !settings.hf_token.trim().is_empty() {
-            cmd.env("HF_TOKEN", settings.hf_token.trim());
-        }
-        no_window(&mut cmd);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("could not start {}: {e}", python.display()))?;
+        let settings = settings::load();
+        let (mut child, python) = process::spawn_worker(&settings)?;
 
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take().ok_or("no stderr")?;

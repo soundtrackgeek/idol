@@ -73,6 +73,7 @@ jobs:
           $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           Copy-Item $setup.FullName "release/IdolStudio_${env:VERSION}_x64-setup.exe"
           Copy-Item "src-tauri/target/release/idol-studio.exe" "release/IdolStudio_${env:VERSION}_x64-portable.exe"
+          Copy-Item "src-tauri/target/release/idol-studio-cli.exe" "release/IdolStudio_${env:VERSION}_x64-cli.exe"
           Get-ChildItem release
 
       - name: Release notes from CHANGELOG.md
@@ -89,7 +90,7 @@ jobs:
           }
           if (-not $notes) { $notes = @("Idol Studio $env:VERSION") }
           $notes += ""
-          $notes += "**Download:** ``IdolStudio_${env:VERSION}_x64-setup.exe`` (installer) or ``IdolStudio_${env:VERSION}_x64-portable.exe`` (no install)."
+          $notes += "**Download:** ``IdolStudio_${env:VERSION}_x64-setup.exe`` (installer, includes the CLI), ``IdolStudio_${env:VERSION}_x64-portable.exe`` (no install) or ``IdolStudio_${env:VERSION}_x64-cli.exe`` (command line only)."
           $notes | Set-Content -Encoding utf8 release-notes.md
           Get-Content release-notes.md
 
@@ -104,4 +105,5 @@ jobs:
             --title "Idol Studio v$env:VERSION" `
             --notes-file release-notes.md `
             "release/IdolStudio_${env:VERSION}_x64-setup.exe" `
-            "release/IdolStudio_${env:VERSION}_x64-portable.exe"
+            "release/IdolStudio_${env:VERSION}_x64-portable.exe" `
+            "release/IdolStudio_${env:VERSION}_x64-cli.exe"

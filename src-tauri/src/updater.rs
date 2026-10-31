@@ -131,7 +131,7 @@ pub fn spawn_periodic_checks(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_AFTER).await;
         loop {
-            if settings::load(&app).check_updates {
+            if settings::load().check_updates {
                 match fetch(&current_version(&app)).await {
                     Ok(info) => {
                         let _ = app.emit("update-checked", info.clone());

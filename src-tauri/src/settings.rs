@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
+use crate::paths;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
 
 /// User settings, stored as JSON in the app config folder.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -36,31 +36,26 @@ impl Default for Settings {
     }
 }
 
-fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("settings.json"))
+fn settings_file() -> Result<PathBuf, String> {
+    Ok(paths::config_dir()?.join("settings.json"))
 }
 
-pub fn load(app: &AppHandle) -> Settings {
-    settings_file(app)
+pub fn load() -> Settings {
+    settings_file()
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let path = settings_file(app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
+pub fn save(settings: &Settings) -> Result<(), String> {
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| e.to_string())
+    paths::write_atomic(&settings_file()?, text.as_bytes())
 }
 
 /// The virtual environment managed by the app.
-pub fn env_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("env"))
+pub fn env_dir() -> Result<PathBuf, String> {
+    Ok(paths::local_data_dir()?.join("env"))
 }
 
 pub fn env_python(env: &std::path::Path) -> PathBuf {
@@ -72,17 +67,16 @@ pub fn env_python(env: &std::path::Path) -> PathBuf {
 }
 
 /// The interpreter the worker runs with.
-pub fn python(app: &AppHandle, settings: &Settings) -> Result<PathBuf, String> {
+pub fn python(settings: &Settings) -> Result<PathBuf, String> {
     if !settings.python_path.trim().is_empty() {
         return Ok(PathBuf::from(settings.python_path.trim()));
     }
-    Ok(env_python(&env_dir(app)?))
+    Ok(env_python(&env_dir()?))
 }
 
-pub fn output_dir(app: &AppHandle, settings: &Settings) -> Result<PathBuf, String> {
+pub fn output_dir(settings: &Settings) -> Result<PathBuf, String> {
     if !settings.output_dir.trim().is_empty() {
         return Ok(PathBuf::from(settings.output_dir.trim()));
     }
-    let docs = app.path().document_dir().map_err(|e| e.to_string())?;
-    Ok(docs.join("Idol Studio"))
+    Ok(paths::documents_dir()?.join("Idol Studio"))
 }

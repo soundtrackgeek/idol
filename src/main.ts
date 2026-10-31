@@ -76,6 +76,8 @@ interface AppInfo {
   python_exists: boolean;
   output_dir: string;
   worker_script: string;
+  cli_path: string;
+  cli_installed: boolean;
 }
 
 interface UpdateInfo {
@@ -107,7 +109,8 @@ const CROP_FOR_MODE: Record<Mode, number> = { synthetic: 1.2, real: 1.7 };
 const LIBRARY_KEY = "idol-studio.library.v1";
 const OPTIONS_KEY = "idol-studio.options.v1";
 
-let library: LibraryImage[] = loadJson(LIBRARY_KEY, []);
+// The library lives in library.json (shared with the CLI); this is the page's copy.
+let library: LibraryImage[] = [];
 let options: GenParams & { variants: number; randomSeed: boolean } = {
   ...DEFAULTS,
   variants: 1,
@@ -116,7 +119,7 @@ let options: GenParams & { variants: number; randomSeed: boolean } = {
 };
 let settings: Settings;
 let info: AppInfo;
-let selectedImageId: string | null = library[0]?.id ?? null;
+let selectedImageId: string | null = null;
 let selectedResultId: string | null = null;
 let jobs: Job[] = [];
 let workerState: "stopped" | "starting" | "idle" | "loading" | "busy" = "stopped";
@@ -136,7 +139,12 @@ function loadJson<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
-const saveLibrary = () => localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
+/** Change the library safely: reload it from disk (the CLI may have added results), change it, save it. */
+async function mutateLibrary(change: (library: LibraryImage[]) => void) {
+  library = await invoke<LibraryImage[]>("library_load");
+  change(library);
+  await invoke("library_save", { library });
+}
 const saveOptions = () => localStorage.setItem(OPTIONS_KEY, JSON.stringify(options));
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -269,8 +277,7 @@ function endJob(job: Job, status: JobStatus, message: string) {
   pump();
 }
 
-function finishGenerate(job: Job, event: WorkerEvent) {
-  const image = library.find((i) => i.id === job.imageId);
+async function finishGenerate(job: Job, event: WorkerEvent) {
   const result: Result = {
     id: uid(),
     ply: event.ply,
@@ -282,11 +289,14 @@ function finishGenerate(job: Job, event: WorkerEvent) {
     vram_peak_gb: event.vram_peak_gb,
     created: Date.now(),
   };
-  if (image) {
-    image.results.unshift(result);
-    image.preview = event.preprocessed;
-    saveLibrary();
-  }
+  await mutateLibrary((lib) => {
+    const image = lib.find((i) => i.id === job.imageId);
+    if (image) {
+      image.results.unshift(result);
+      image.preview = event.preprocessed;
+    }
+  }).catch((e) => log(`[library] ${e}`));
+  const image = library.find((i) => i.id === job.imageId);
   log(`[done] ${job.imageName}: ${fmt(event.num_gaussians)} Gaussians in ${event.seconds}s, peak ${event.vram_peak_gb ?? "?"} GB VRAM`);
   endJob(job, "done", `${event.seconds}s · ${fmt(event.num_gaussians)} Gaussians`);
   if (image && image.id === selectedImageId) {
@@ -311,12 +321,12 @@ function adoptResult(event: WorkerEvent) {
   finishGenerate(job, event);
 }
 
-function finishPreprocess(job: Job, event: WorkerEvent) {
+async function finishPreprocess(job: Job, event: WorkerEvent) {
+  await mutateLibrary((lib) => {
+    const image = lib.find((i) => i.id === job.imageId);
+    if (image) image.preview = event.path;
+  }).catch((e) => log(`[library] ${e}`));
   const image = library.find((i) => i.id === job.imageId);
-  if (image) {
-    image.preview = event.path;
-    saveLibrary();
-  }
   endJob(job, "done", "Preview ready");
   if (image && image.id === selectedImageId) {
     showPreprocessed(event.path);
@@ -465,12 +475,10 @@ function renderLibrary() {
       </div>
       <button class="icon-btn" title="Remove from list" data-remove>&times;</button>`;
     li.addEventListener("click", () => selectImage(image.id));
-    li.querySelector("[data-remove]")!.addEventListener("click", (e) => {
+    li.querySelector("[data-remove]")!.addEventListener("click", async (e) => {
       e.stopPropagation();
-      library = library.filter((i) => i.id !== image.id);
+      await mutateLibrary((lib) => lib.splice(0, lib.length, ...lib.filter((i) => i.id !== image.id)));
       if (selectedImageId === image.id) selectedImageId = library[0]?.id ?? null;
-      saveLibrary();
-      renderLibrary();
       selectImage(selectedImageId);
     });
     listEl.appendChild(li);
@@ -478,20 +486,27 @@ function renderLibrary() {
 }
 
 async function addImages(paths: string[]) {
-  let added = 0;
+  const fresh: LibraryImage[] = [];
   for (const path of paths) {
     let files = [path];
     if (await invoke<boolean>("is_dir", { path })) files = await invoke<string[]>("list_images", { dir: path });
     for (const file of files) {
       if (!/\.(png|jpe?g|webp|bmp)$/i.test(file)) continue;
-      if (library.some((i) => i.path === file)) continue;
-      library.push({ id: uid(), path: file, name: await basename(file), results: [] });
-      added++;
+      fresh.push({ id: uid(), path: file, name: await basename(file), results: [] });
     }
   }
-  saveLibrary();
+  let added = 0;
+  let firstId = "";
+  await mutateLibrary((lib) => {
+    for (const image of fresh) {
+      if (lib.some((i) => i.path.toLowerCase() === image.path.toLowerCase())) continue;
+      lib.push(image);
+      firstId ||= image.id;
+      added++;
+    }
+  });
   if (added) {
-    selectImage(library[library.length - added].id);
+    selectImage(firstId);
     toast(`Added ${added} image${added > 1 ? "s" : ""}.`);
   } else {
     renderLibrary();
@@ -759,8 +774,10 @@ function bindChrome() {
     if (!image || !result) return;
     if (!confirm("Delete this result's files from disk?")) return;
     await invoke("delete_outputs", { paths: [result.ply, result.preprocessed, result.camera_path] }).catch((e) => toast(String(e), true));
-    image.results = image.results.filter((r) => r.id !== result.id);
-    saveLibrary();
+    await mutateLibrary((lib) => {
+      const stored = lib.find((i) => i.id === image.id);
+      if (stored) stored.results = stored.results.filter((r) => r.id !== result.id);
+    });
     selectImage(image.id);
   });
 
@@ -790,6 +807,10 @@ async function refreshInfo() {
     ? `Using ${info.python}`
     : `No Python environment yet. "Set up" creates one in ${info.env_dir} with CUDA PyTorch and Idol (about 5 GB).`;
   $("env-banner").classList.toggle("hidden", info.python_exists);
+  $<HTMLInputElement>("cli-path").value = info.cli_path;
+  $("cli-hint").textContent = info.cli_installed
+    ? `Try: "${info.cli_path}" generate photo.jpg --mode real   ·   --help lists every option, --json gives machine-readable output.`
+    : "This build has no separate CLI; the app takes the same commands: idol-studio.exe generate photo.jpg (pipe its output, e.g. | more).";
 }
 
 function fillSettingsForm() {
@@ -838,6 +859,10 @@ function bindSettings() {
   $("btn-output-browse").addEventListener("click", async () => {
     const dir = await openDialog({ directory: true });
     if (typeof dir === "string") $<HTMLInputElement>("set-output").value = dir;
+  });
+  $("btn-cli-copy").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(`"${info.cli_path}"`);
+    toast("CLI path copied.");
   });
   $("btn-output-open").addEventListener("click", () => openPath(info.output_dir).catch((e) => toast(String(e), true)));
 
@@ -1005,6 +1030,33 @@ async function main() {
     pendingRequests.clear();
     renderQueue();
     pump();
+  });
+
+  // The library moved from localStorage to library.json (shared with the CLI) in 0.2.0: import it once.
+  const old = loadJson<LibraryImage[] | null>(LIBRARY_KEY, null);
+  if (old) {
+    await invoke("library_import", { library: old }).catch((e) => log(`[library] ${e}`));
+    localStorage.removeItem(LIBRARY_KEY);
+  }
+  library = await invoke<LibraryImage[]>("library_load");
+  selectedImageId = library[0]?.id ?? null;
+  // Results added by the CLI (or another window) show up right away.
+  await listen("library-changed", async () => {
+    library = await invoke<LibraryImage[]>("library_load");
+    if (!library.some((i) => i.id === selectedImageId)) selectedImageId = library[0]?.id ?? null;
+    const image = selectedImage();
+    const newest = image?.results[0];
+    if (newest && !image!.results.some((r) => r.id === selectedResultId)) {
+      selectImage(image!.id);
+    } else if (newest && newest.id !== selectedResultId && newest.created > Date.now() - 60_000) {
+      selectedResultId = newest.id; // a fresh result for the image on screen: show it
+      renderLibrary();
+      renderResults();
+      showResult(newest);
+    } else {
+      renderLibrary();
+      renderResults();
+    }
   });
 
   renderLibrary();

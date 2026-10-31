@@ -252,7 +252,11 @@ def cmd_check_access(request):
 
 
 def cmd_load(request):
+    already = STATE['pipeline'] is not None
+    before = STATE['pipeline']
     ensure_pipeline(request)
+    if already and STATE['pipeline'] is before:  # was already loaded with this config: still answer
+        send('loaded', id=request.get('id'), config=STATE['config'], seconds=0.0, cached=True, **gpu_memory())
 
 
 BIREFNET = {'weights': None, 'model': None, 'image_size': 1024}

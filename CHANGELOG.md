@@ -2,6 +2,24 @@
 
 All notable changes to Idol Studio are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-31
+
+### Added
+
+- Command line interface for scripts and AI agents: `idol-studio-cli.exe`. It is installed next to the app and published as `IdolStudio_<version>_x64-cli.exe`. The app exe takes the same commands.
+  - Commands: `generate`, `preview`, `check-access`, `info`, `setup`, `serve`, `config`, `library`.
+  - `generate` takes every Idol option, files and folders, variants and random seeds.
+  - `--json` gives JSON-lines output: progress, results with paths, camera and timings, and a summary. Exit codes tell errors and missing Hugging Face access apart.
+- `serve` keeps the model loaded on 127.0.0.1:47817. Later CLI calls use it automatically and skip the model load and compile.
+- Results generated from the command line appear in the open app right away.
+- Settings → Command line shows the CLI path.
+
+### Changed
+
+- The image library is now stored in `library.json` in the app config folder (shared with the CLI) instead of the webview. The old library is imported automatically.
+- Python workers stop when the app or CLI that started them exits, even if it is killed or crashes, so no GPU memory is left behind.
+- The worker always answers a `load` request, even when the model is already loaded.
+
 ## [0.1.1] - 2026-10-31
 
 ### Fixed

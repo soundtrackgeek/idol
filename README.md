@@ -29,6 +29,7 @@ The three test images in `samples/`, generated with the default settings and see
 - **Results**: every run is kept per image with its settings, time and VRAM peak. You can open the `.ply`, show it in Explorer, copy its settings back to the panel, or delete it.
 - **One-click Python setup**: creates a private environment with CUDA PyTorch, Idol and Triton.
 - **Automatic update check**: on start, every 30 minutes while open, and on demand. New versions download and install from GitHub Releases.
+- **Command line / headless mode** for scripts and AI agents: every generation option, JSON output, a `serve` mode that keeps the model loaded, and results that show up in the app.
 
 ## Requirements
 
@@ -46,6 +47,7 @@ Download the latest release from [Releases](https://github.com/soundtrackgeek/id
 
 - `IdolStudio_<version>_x64-setup.exe`: installer (per user, no admin needed)
 - `IdolStudio_<version>_x64-portable.exe`: single exe, no install
+- `IdolStudio_<version>_x64-cli.exe`: the command line interface on its own
 
 ## First run
 
@@ -92,6 +94,91 @@ Output goes to `Documents\Idol Studio\<image name>\` (you can change this in Set
 
 Changing precision, faster sampling or weights reloads the model on the next run. **Unload model** frees the GPU memory without stopping the worker. **Stop worker** ends the Python process.
 
+## Command line (for scripts and AI agents)
+
+Everything the app generates can also be done headless with `idol-studio-cli.exe`. It uses the same settings, Python environment, Hugging Face token, output folder and image library as the app, and results it generates show up in the open app right away.
+
+- **Installed:** `%LOCALAPPDATA%\Idol Studio\idol-studio-cli.exe`. The exact path is in **Settings → Command line**.
+- **Download:** `IdolStudio_<version>_x64-cli.exe` from the release.
+- **Without the CLI exe:** `idol-studio.exe` (the app, including the portable exe) takes the same commands, e.g. `idol-studio.exe generate photo.jpg`. Because it's a GUI program, it only prints when its output is redirected (piped or written to a file).
+
+```bash
+idol-studio-cli generate photo.jpg --mode real                 # prints the .ply path(s) on stdout
+idol-studio-cli generate renders/ --variants 3 --random-seed   # a folder, 3 random seeds per image
+idol-studio-cli generate a.png b.png --gaussians 524288 --steps 30 --json
+idol-studio-cli preview photo.jpg --mode real                  # just the background-removed crop (fast)
+idol-studio-cli serve                                          # keep the model loaded (see below)
+idol-studio-cli check-access                                   # Hugging Face access to the gated encoders
+idol-studio-cli info                                           # versions, paths, GPU
+idol-studio-cli setup                                          # create or repair the Python environment
+idol-studio-cli config set hf_token hf_xxx                     # settings (shared with the app)
+idol-studio-cli library --json                                 # every image and result
+```
+
+### `generate` options
+
+| option | default | |
+|---|---|---|
+| `<images>...` | | image files and/or folders (png, jpg, jpeg, webp, bmp) |
+| `--mode synthetic` / `real` | `synthetic` | renders and generated images, or photos |
+| `--crop <f>` | 1.2 / 1.7 | crop margin override |
+| `--seed <n>` | 42 | variants use seed, seed+1, ... |
+| `--random-seed` | off | a random seed for every run |
+| `--variants <n>` | 1 | runs per image (1–64) |
+| `--steps <n>` | 50 | sampling steps |
+| `--cfg <f>` | 3.0 | guidance strength |
+| `--shift <f>` | 3.0 | time shift |
+| `--gaussians <n>` | 262144 | 32768–1048576, a multiple of 32 |
+| `--out <dir>` | settings | output folder (each image gets a subfolder) |
+| `--dtype bf16` / `fp32` | settings | DINOv3 precision |
+| `--optimize` / `--no-optimize` | settings | torch.compile |
+| `--weights <repo or dir>` | settings | Idol weights |
+| `--no-library` | off | don't add results to the app's library |
+| `--no-server` | off | don't use a running `serve` |
+| `--json` | off | JSON lines on stdout |
+| `-v`, `--verbose` | off | show the Python log on stderr |
+
+### Output for agents
+
+Without `--json`, progress goes to stderr and stdout gets only the paths of the generated `.ply` files, one per line.
+
+With `--json`, stdout carries one JSON object per line. Its `event` field is one of:
+- `start`, `job`
+- `status`: model loading, background removal, sampling, decoding, saving
+- `loaded`
+- `progress`: `step`, `total`, `elapsed`
+- `result`
+- `job_error`
+- `summary`: all results, `ok`, `failed` and `skipped` counts
+
+A `result` event looks like this:
+
+```json
+{"event":"result","job":1,"image":"C:\\in\\robot.png","seed":42,"ply":"...\\robot_synthetic_s42_256k_20261031-121115.ply",
+ "preprocessed":"..._input.png","camera_path":"..._camera.json","camera":{"yaw":1.68,"pitch":0.16,"radius":2.4,"fov":38.6},
+ "seconds":71.4,"num_gaussians":262144,"vram_peak_gb":4.98,"params":{"mode":"synthetic","crop_margin":null,"seed":42}}
+```
+
+Exit codes:
+
+| code | meaning |
+|---|---|
+| `0` | ok |
+| `1` | error |
+| `2` | bad arguments |
+| `3` | Hugging Face access missing (run `check-access`) |
+
+If an agent kills the CLI, its Python worker is stopped too, so no GPU memory is left behind.
+
+### Keeping the model loaded: `serve`
+
+Every `generate` that starts its own worker pays for loading the model (~40–60 s) and, with faster sampling on, compiling (~1 min on the first image). Run `idol-studio-cli serve` once, in a terminal or in the background. Later `generate`, `preview` and `check-access` calls find it automatically and only pay for the generation itself: about 18 s for 10 steps, or 70 s for 50 steps, on an RTX 4060 Ti.
+
+- It listens on `127.0.0.1:47817` (`--port` to change it) and takes one request at a time.
+- `--lazy` waits for the first request before loading the model.
+- `--no-server` on any command bypasses it.
+- The app keeps its own worker, so with the app and `serve` both generating, the model is in VRAM twice (~5 GB each).
+
 ## Updates
 
 The app checks [GitHub Releases](https://github.com/soundtrackgeek/idol/releases) a few seconds after start and then every 30 minutes, if **Check for updates** is on in Settings. The **Check for updates** button in the top bar checks right away. When a newer version is out, a banner offers **Download and install**: the app downloads the installer, runs it and closes.
@@ -111,7 +198,9 @@ Layout:
 | path | |
 |---|---|
 | `src/` | frontend (TypeScript + Vite). `main.ts` holds the UI logic, `viewer.ts` the splat viewer ([Spark](https://sparkjs.dev) + three.js) |
-| `src-tauri/src/` | Rust backend: `worker.rs` (Python process), `setup.rs` (environment setup), `updater.rs` (update check), `settings.rs` |
+| `src-tauri/src/` | Rust backend: `cli.rs` (command line), `library.rs` (image library, shared with the CLI), `worker.rs` (the app's Python worker), `process.rs` (starting Python), `setup.rs` (environment setup), `updater.rs` (update check), `settings.rs`, `paths.rs` |
+| `src-tauri/src/bin/idol-studio-cli.rs` | the console CLI binary |
+| `src-tauri/windows/hooks.nsh` | installer hook that installs the CLI next to the app |
 | `src-tauri/python/idol_worker.py` | the Python worker. It is compiled into the app and written to the app data folder at runtime |
 | `.github/workflows/release.yml` | builds and publishes a release when the version is bumped |
 
