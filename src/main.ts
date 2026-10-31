@@ -67,11 +67,15 @@ interface ExportOptions {
   smooth: number;
   faces: number;
   height: number | null;
+  game_faces?: number;
+  texture_size?: number;
 }
 
-const MESH_FORMATS = ["glb", "obj", "stl", "mesh-ply"];
+const MESH_FORMATS = ["glb", "obj", "stl", "mesh-ply", "game-glb"];
+/** Exports the viewer can preview as a mesh. */
+const PREVIEW_FORMATS = ["glb", "game-glb"];
 const EXPORT_SUFFIX: Record<string, string> = {
-  ply: "_splat.ply", spz: ".spz", splat: ".splat", points: "_points.ply", glb: ".glb", obj: ".obj", stl: ".stl", "mesh-ply": "_mesh.ply",
+  ply: "_splat.ply", spz: ".spz", splat: ".splat", points: "_points.ply", glb: ".glb", obj: ".obj", stl: ".stl", "mesh-ply": "_mesh.ply", "game-glb": "_game.glb",
 };
 
 interface Settings {
@@ -343,7 +347,7 @@ async function finishExport(job: Job, event: WorkerEvent) {
   if (result && result.ply.toLowerCase() === String(event.ply).toLowerCase()) {
     renderResults();
     fillShowMenu(result);
-    if (event.format === "glb") {
+    if (PREVIEW_FORMATS.includes(event.format)) {
       ($("vt-show") as HTMLSelectElement).value = event.path;
       showResult(result, event.path);
     }
@@ -634,8 +638,9 @@ function showPreprocessed(path?: string) {
 function fillShowMenu(result: Result | undefined) {
   const select = $<HTMLSelectElement>("vt-show");
   const current = select.value;
-  const meshes = (result?.exports ?? []).filter((e) => e.format === "glb");
-  select.innerHTML = `<option value="">Splat</option>` + meshes.map((m) => `<option value="${escapeHtml(m.path)}">Mesh (.glb)${meshes.length > 1 ? " " + escapeHtml(m.path.split(/[\\/]/).pop()!) : ""}</option>`).join("");
+  const meshes = (result?.exports ?? []).filter((e) => PREVIEW_FORMATS.includes(e.format));
+  const label = (m: { format: string }) => (m.format === "game-glb" ? "Game mesh (.glb)" : "Mesh (.glb)");
+  select.innerHTML = `<option value="">Splat</option>` + meshes.map((m) => `<option value="${escapeHtml(m.path)}">${label(m)}${meshes.length > 1 ? " " + escapeHtml(m.path.split(/[\\/]/).pop()!) : ""}</option>`).join("");
   select.value = meshes.some((m) => m.path === current) ? current : "";
   select.classList.toggle("hidden", meshes.length === 0);
 }
@@ -888,6 +893,9 @@ function bindExport() {
     const mesh = MESH_FORMATS.includes(format());
     $("mesh-options").classList.toggle("hidden", !mesh);
     $("field-threshold").classList.toggle("hidden", !mesh || method() !== "density");
+    const game = format() === "game-glb";
+    document.querySelectorAll(".game-only").forEach((el) => el.classList.toggle("hidden", !game));
+    document.querySelectorAll(".not-game").forEach((el) => el.classList.toggle("hidden", game));
   };
   const syncOutputs = () => {
     $("out-threshold").textContent = Number($<HTMLInputElement>("ex-threshold").value).toFixed(2);
@@ -904,6 +912,8 @@ function bindExport() {
     $<HTMLSelectElement>("ex-method").value = saved.options.method;
     $<HTMLSelectElement>("ex-resolution").value = String(saved.options.resolution);
     $<HTMLSelectElement>("ex-faces").value = String(saved.options.faces);
+    $<HTMLSelectElement>("ex-game-faces").value = String(saved.options.game_faces ?? 20000);
+    $<HTMLSelectElement>("ex-texture-size").value = String(saved.options.texture_size ?? 2048);
     $<HTMLInputElement>("ex-threshold").value = String(saved.options.threshold);
     $<HTMLInputElement>("ex-smooth").value = String(saved.options.smooth);
     $<HTMLInputElement>("ex-height").value = saved.options.height ? String(saved.options.height) : "";
@@ -926,6 +936,8 @@ function bindExport() {
       smooth: Number($<HTMLInputElement>("ex-smooth").value),
       faces: Number($<HTMLSelectElement>("ex-faces").value),
       height: height > 0 ? height : null,
+      game_faces: Number($<HTMLSelectElement>("ex-game-faces").value),
+      texture_size: Number($<HTMLSelectElement>("ex-texture-size").value),
     };
     const fmtName = format();
     const saveAs = $<HTMLInputElement>("ex-saveas").checked;

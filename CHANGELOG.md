@@ -2,6 +2,19 @@
 
 All notable changes to Idol Studio are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-10-31
+
+### Added
+
+- **Game-ready .glb export** for game engines and rigging: a low-poly mesh (20k triangles by default, 5k to 50k in the app) with automatic UVs (xatlas) and the splat colours baked into a texture (2048 px by default, 1024 or 4096 in the app), smooth normals and a matte PBR material. In the Export dialog under **Game-ready**; on the command line `--format game-glb` with `--game-faces` and `--texture-size`. Game-ready meshes preview in the viewer with their texture.
+- Environment setup installs `xatlas` for UV unwrapping.
+
+### Fixed
+
+- Mesh exports are closed where the object is solid. Removing the skin Poisson stretches across gaps (between legs) left the inner side of those parts open, which showed as holes in single-sided viewers and game engines.
+- Thin separate pieces of a mesh (for example the top of a lamp's base) could face inward, so single-sided viewers showed a hole there. Each piece is now oriented using the splats: outside is the side with empty space.
+- Mesh colours are sampled just outside the surface, so the darker interior splats of solid parts no longer darken them.
+
 ## [0.4.1] - 2026-10-31
 
 ### Fixed

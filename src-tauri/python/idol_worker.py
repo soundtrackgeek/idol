@@ -363,10 +363,12 @@ def cmd_export(request):
     if request.get('format', 'glb') in idol_export.MESH_FORMATS:
         try:
             import scipy, skimage, trimesh  # noqa: F401
-            if method == 'poisson':
+            if method == 'poisson' or request.get('format') == 'game-glb':
                 import open3d  # noqa: F401
+            if request.get('format') == 'game-glb':
+                import xatlas  # noqa: F401
         except ImportError as error:
-            package = 'Open3D' if error.name == 'open3d' else error.name
+            package = {'open3d': 'Open3D', 'xatlas': 'xatlas'}.get(error.name, error.name)
             raise UserError(f'Mesh export needs {package}. Run "Set up / repair environment" in Settings '
                             '(or `idol-studio-cli setup`) to install it.')
     job_id = request['id']
@@ -389,7 +391,9 @@ def cmd_export(request):
                               threshold=request.get('threshold') if request.get('threshold') is not None else 0.5,
                               smooth=request.get('smooth') if request.get('smooth') is not None else 3,
                               faces=request.get('faces') if request.get('faces') is not None else 200_000,
-                              height=request.get('height'), method=method, progress=progress)
+                              height=request.get('height'), method=method,
+                              texture_size=request.get('texture_size') or 2048,
+                              game_faces=request.get('game_faces') or 20_000, progress=progress)
     send('exported', id=job_id, ply=request['ply'], **info)
 
 

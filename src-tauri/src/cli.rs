@@ -66,7 +66,7 @@ enum Command {
     Generate(GenerateArgs),
     /// Save the background-removed, cropped image the model would see (fast: loads only BiRefNet)
     Preview(PreviewArgs),
-    /// Export splats (.ply) to other formats: spz, splat, points, glb, obj, stl, mesh-ply
+    /// Export splats (.ply) to other formats: spz, splat, points, glb, obj, stl, mesh-ply, game-glb
     Export(ExportArgs),
     /// Check Hugging Face access to the gated encoders Idol needs
     CheckAccess(PipelineArgs),
@@ -102,6 +102,8 @@ enum Format {
     Stl,
     /// Mesh with vertex colours, .ply
     MeshPly,
+    /// Game-ready mesh: low poly (--game-faces), UVs and a baked colour texture (--texture-size), glTF binary
+    GameGlb,
 }
 
 impl Format {
@@ -115,6 +117,7 @@ impl Format {
             Format::Obj => "obj",
             Format::Stl => "stl",
             Format::MeshPly => "mesh-ply",
+            Format::GameGlb => "game-glb",
         }
     }
     /// File name suffix added to the splat's base name.
@@ -128,6 +131,7 @@ impl Format {
             Format::Obj => ".obj",
             Format::Stl => ".stl",
             Format::MeshPly => "_mesh.ply",
+            Format::GameGlb => "_game.glb",
         }
     }
 }
@@ -169,6 +173,12 @@ struct MeshArgs {
     /// Mesh: scale so the object is this tall, in file units (e.g. 100 = 100 mm in an STL)
     #[arg(long)]
     height: Option<f64>,
+    /// Game-ready mesh: triangle count
+    #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1_000..=200_000))]
+    game_faces: u64,
+    /// Game-ready mesh: texture size in pixels
+    #[arg(long, default_value = "2048", value_parser = ["512", "1024", "2048", "4096"])]
+    texture_size: String,
 }
 
 #[derive(Args)]
@@ -176,7 +186,7 @@ struct ExportArgs {
     /// Splat .ply files and/or folders of them (from Idol)
     #[arg(required = true)]
     plys: Vec<PathBuf>,
-    /// Formats, comma separated: ply, spz, splat, points, glb, obj, stl, mesh-ply
+    /// Formats, comma separated: ply, spz, splat, points, glb, obj, stl, mesh-ply, game-glb
     #[arg(long, short, value_enum, value_delimiter = ',', required = true)]
     format: Vec<Format>,
     /// Output file (one input and one format) or folder [default: next to the .ply]
@@ -299,7 +309,7 @@ struct GenerateArgs {
     /// Don't add the results to the app's library
     #[arg(long)]
     no_library: bool,
-    /// Also export every result, comma separated: ply, spz, splat, points, glb, obj, stl, mesh-ply
+    /// Also export every result, comma separated: ply, spz, splat, points, glb, obj, stl, mesh-ply, game-glb
     #[arg(long, value_enum, value_delimiter = ',')]
     export: Vec<Format>,
     #[command(flatten)]
@@ -987,6 +997,7 @@ fn run_export(
         "cmd": "export", "id": format!("cli-{}", library::new_id()), "ply": ply, "format": format.name(),
         "method": mesh.method.name(), "out_path": target, "resolution": mesh.resolution,
         "threshold": mesh.threshold, "smooth": mesh.smooth, "faces": mesh.faces, "height": mesh.height,
+        "game_faces": mesh.game_faces, "texture_size": mesh.texture_size.parse::<u32>().unwrap_or(2048),
     });
     out.say(format!("  exporting {}...", format.name()));
     let event = backend.request(&request, &mut |event| {

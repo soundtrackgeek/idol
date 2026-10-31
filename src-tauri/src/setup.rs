@@ -80,7 +80,7 @@ fn setup_inner(log: Log) -> Result<PathBuf, String> {
     }
     log(format!("Environment folder: {env_str}"));
     // accelerate: faster model loading; the rest: mesh export (Poisson reconstruction, mesh I/O, decimation).
-    let mut extras = vec![IDOL_PACKAGE, "accelerate", "scipy", "scikit-image", "trimesh", "fast-simplification", "open3d"];
+    let mut extras = vec![IDOL_PACKAGE, "accelerate", "scipy", "scikit-image", "trimesh", "fast-simplification", "open3d", "xatlas"];
     if cfg!(windows) {
         extras.push("triton-windows");
     }

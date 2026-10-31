@@ -95,6 +95,7 @@ Select a result and press **Export...**. Splat and point-cloud formats are quick
 | `.obj` | mesh | vertex colours, y-up |
 | `.ply` mesh | mesh | vertex colours, y-up, for MeshLab |
 | `.stl` | mesh | z-up, centred and standing on z=0, for slicers |
+| `.glb` game-ready | mesh | low poly (20k triangles), UVs and a baked colour texture, y-up: for game engines and rigging |
 
 Mesh exports default to **screened Poisson reconstruction** from the Gaussian centres. It fits a smooth surface through the splats and keeps faces, eyes and thin parts far better than a voxel density field; vertex colours come from the nearest splats. Faint splats are kept (the sides Idol invents, like the back of an object, are made of them), and the skin Poisson stretches across real gaps, such as between legs, is cut away where no splat is near. The **density field** method is there for very thin or unusual objects. Both methods give the GLB a matte material and convert the colours to glTF's linear space, because glTF's defaults otherwise make vertex-coloured meshes look pale or metallic.
 
@@ -107,6 +108,16 @@ Mesh options:
 - **Height** scales the object so it is that tall in file units (for example 100 for 100 mm in an STL).
 
 The exported `.glb` appears in the viewer's **Splat / Mesh** menu for that result.
+
+### Game-ready meshes
+
+The **Game-ready .glb** export is meant for Unity, Unreal, Godot and rigging in Blender:
+
+- a low-poly mesh (**Triangles**: 5k, 10k, 20k by default, or 50k), closed where the object is solid;
+- automatic UVs (xatlas) and the splat colours baked into a **texture** (1024, 2048 by default, or 4096 pixels);
+- smooth normals and a matte PBR material, standing upright on the ground (y-up).
+
+It imports directly into Blender (File → Import → glTF), Godot, Unity (with glTFast) and Unreal (Interchange). For rigging, add an armature and parent with automatic weights; a pose with the arms away from the body rigs most easily. Splat colours include the lighting the source image had, so shadows are baked into the texture. For an animated character, expect some cleanup: the mesh is a reconstruction from one image, with triangle topology rather than edge loops.
 
 ## Options
 
@@ -140,6 +151,7 @@ idol-studio-cli generate renders/ --variants 3 --random-seed   # a folder, 3 ran
 idol-studio-cli generate a.png b.png --gaussians 524288 --steps 30 --json
 idol-studio-cli generate photo.jpg --export glb,spz            # generate and export in one run
 idol-studio-cli export result.ply --format stl --height 100    # mesh for a slicer, 100 mm tall
+idol-studio-cli export result.ply --format game-glb            # low poly + texture, for engines and rigging
 idol-studio-cli export results/ --format spz,glb --out exports
 idol-studio-cli preview photo.jpg --mode real                  # just the background-removed crop (fast)
 idol-studio-cli serve                                          # keep the model loaded (see below)
@@ -169,13 +181,15 @@ idol-studio-cli library --json                                 # every image and
 | `--dtype bf16` / `fp32` | settings | DINOv3 precision |
 | `--optimize` / `--no-optimize` | settings | torch.compile |
 | `--weights <repo or dir>` | settings | Idol weights |
-| `--export <formats>` | off | also export every result: `ply,spz,splat,points,glb,obj,stl,mesh-ply` |
+| `--export <formats>` | off | also export every result: `ply,spz,splat,points,glb,obj,stl,mesh-ply,game-glb` |
 | `--method poisson` / `density` | `poisson` | mesh reconstruction method |
 | `--resolution <n>` | 256 | mesh detail (Poisson depth), 64–768 |
 | `--threshold <f>` | 0.5 | density method only: surface threshold (lower is fuller) |
 | `--smooth <n>` | 3 | mesh smoothing passes (0 = none) |
 | `--faces <n>` | 200000 | mesh target triangle count (0 = all) |
 | `--height <f>` | native | scale so the mesh is this tall in file units |
+| `--game-faces <n>` | 20000 | game-ready mesh: triangle count (1000–200000) |
+| `--texture-size <n>` | 2048 | game-ready mesh: texture size (512, 1024, 2048, 4096) |
 | `--no-library` | off | don't add results to the app's library |
 | `--no-server` | off | don't use a running `serve` |
 | `--json` | off | JSON lines on stdout |
@@ -190,7 +204,7 @@ idol-studio-cli export a.ply b.ply --format obj,stl --height 100 --json
 idol-studio-cli export thin.ply --format stl --method density
 ```
 
-`--format` takes one or more of `ply,spz,splat,points,glb,obj,stl,mesh-ply`. Inputs are `.ply` files or folders of them (not recursive). `--out` is a file when there is exactly one input and one format, otherwise a folder (default: next to the `.ply`). Mesh options are the same as for `generate` above. Files exported through the CLI are recorded in the app's library, so the open app shows them on the result.
+`--format` takes one or more of `ply,spz,splat,points,glb,obj,stl,mesh-ply,game-glb`. Inputs are `.ply` files or folders of them (not recursive). `--out` is a file when there is exactly one input and one format, otherwise a folder (default: next to the `.ply`). Mesh options are the same as for `generate` above. Files exported through the CLI are recorded in the app's library, so the open app shows them on the result.
 
 `path add|remove|status` edits the user PATH (HKCU\Environment) and tells Explorer about the change; open a new terminal to see it.
 

@@ -38,3 +38,5 @@
 - The worker must never leave a blocking read pending on stdin on Windows: DLL loads (`import torch`) hang while one is pending. Keep the `PeekNamedPipe` reader.
 - Keep stdout of the worker for JSON events only. Everything else goes to stderr.
 - Never commit `.env.local` (it holds the Hugging Face token).
+- Run heavy tests (exports, Blender renders, cargo builds) one at a time under a memory cap: `python scripts/safe_run.py --mem-gb 8 --timeout 600 -- <command>` (it puts the command and its children in a Windows Job Object with a memory limit; give the command as a Windows path). An uncapped test once used up all RAM and froze the machine.
+- Never call `split()` on a textured trimesh (a loaded game-ready GLB): every UV seam becomes its own piece and each piece copies the texture, which needs tens of GB. Rebuild a geometry-only `trimesh.Trimesh(vertices, faces)` first.

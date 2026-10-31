@@ -9,6 +9,10 @@ Mesh:             glb, obj, stl, mesh-ply. The default uses screened Poisson rec
                   eyes and thin parts much better than a density field. `--method density` falls back to
                   an opacity density grid + marching cubes for very thin or unusual objects.
 
+Game-ready mesh:  game-glb. A low-poly version of the Poisson mesh (default 20k triangles) with automatic UVs
+                  (xatlas) and the splat colours baked into a texture, with smooth normals and a matte PBR
+                  material: imports straight into Blender, Unity, Unreal and Godot, ready for rigging.
+
 Mesh formats are turned upright: y-up for glb / obj / mesh-ply, z-up for stl (what slicers expect).
 
 Standalone use: python idol_export.py in.ply out.glb [--resolution 256] [--faces 200000] ...
@@ -23,11 +27,14 @@ import time
 import numpy as np
 
 SH_C0 = 0.28209479177387814
+# Colours are sampled this far (x the object size) outside the surface. Solid parts are filled with darker
+# interior splats that the viewer never shows; sampling right on the surface mixes them in.
+COLOUR_OFFSET = 0.004
 SPLAT_FORMATS = ('ply', 'spz', 'splat')
-MESH_FORMATS = ('glb', 'obj', 'stl', 'mesh-ply')
+MESH_FORMATS = ('glb', 'obj', 'stl', 'mesh-ply', 'game-glb')
 FORMATS = SPLAT_FORMATS + ('points',) + MESH_FORMATS
 EXTENSIONS = {'ply': '.ply', 'spz': '.spz', 'splat': '.splat', 'points': '_points.ply', 'glb': '.glb',
-              'obj': '.obj', 'stl': '.stl', 'mesh-ply': '_mesh.ply'}
+              'obj': '.obj', 'stl': '.stl', 'mesh-ply': '_mesh.ply', 'game-glb': '_game.glb'}
 
 
 def default_path(ply_path, fmt):
@@ -233,6 +240,36 @@ def orient_outward(mesh):
     mesh._cache.clear()
 
 
+def orient_by_splats(mesh, xyz, samples=3000, radius=0.02):
+    """Point every separate piece's faces to the outside, deciding per piece with the splats: outside is the side
+    with empty space. A global "away from the centre" rule gets thin open pieces wrong (the top skin of a lamp's
+    base lies below the object's centre, so it would face down), and single-sided viewers then show a hole."""
+    import trimesh
+    from scipy.spatial import cKDTree
+    tree = cKDTree(xyz)
+    r = radius * float(np.ptp(xyz, axis=0).max())
+    parts = mesh.split(only_watertight=False)
+    if not parts:
+        return mesh
+    rng = np.random.default_rng(0)
+    fixed = []
+    for part in parts:
+        part.fix_normals()
+        pick = rng.choice(len(part.faces), size=min(samples, len(part.faces)), replace=False)
+        centres, normals = part.triangles_center[pick], part.face_normals[pick]
+        score = 0
+        for c, n, neighbours in zip(centres, normals, tree.query_ball_point(centres, r, workers=-1)):
+            if neighbours:
+                side = (xyz[neighbours] - c) @ n
+                score += int((side > 0).sum()) - int((side < 0).sum())
+        if score > 0:  # more splats in front of the faces than behind: they face inward
+            part.invert()
+        fixed.append(part)
+    out = trimesh.util.concatenate(fixed) if len(fixed) > 1 else fixed[0]
+    out._cache.clear()
+    return out
+
+
 def apply_material(mesh):
     """Give GLB a matte material. Without one, glTF viewers apply the spec default (metallic), which
     makes vertex-coloured meshes look dark or washed out."""
@@ -247,6 +284,61 @@ def linearize_vertex_colors(mesh):
     c = np.asarray(mesh.visual.vertex_colors, dtype=np.float64) / 255.0
     rgb = np.where(c[:, :3] <= 0.04045, c[:, :3] / 12.92, ((c[:, :3] + 0.055) / 1.055) ** 2.4)
     mesh.visual.vertex_colors = (np.concatenate([rgb, c[:, 3:4]], axis=1) * 255 + 0.5).astype(np.uint8)
+
+
+def close_holes(mesh, max_loop=5000):
+    """Close the openings the trim leaves (e.g. the inner side of each leg, where Poisson's skin between the
+    legs was cut away). Objects from a single image are solid, and game engines and rigging want closed meshes.
+
+    Pure Python on purpose (VTK's filler crashed on these meshes): walk each boundary loop and fan it to its
+    centre, wound opposite to the existing edge so the patch faces the same way as its neighbours."""
+    import trimesh
+    faces = np.asarray(mesh.faces)
+    directed = faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    keys = directed[:, 0].astype(np.int64) * (len(mesh.vertices) + 1) + directed[:, 1]
+    reverse = directed[:, 1].astype(np.int64) * (len(mesh.vertices) + 1) + directed[:, 0]
+    boundary = directed[~np.isin(keys, reverse)]                     # edges with no opposite half-edge
+    if len(boundary) == 0:
+        return mesh
+    # A hole is walked against the existing edges: existing a->b means the hole goes b->a.
+    nxt = {}
+    for a, b in boundary:
+        nxt.setdefault(int(b), []).append(int(a))
+    vertices = [np.asarray(mesh.vertices)]
+    new_faces = []
+    count = len(mesh.vertices)
+    while nxt:
+        start = next(iter(nxt))
+        loop, v = [start], start
+        while True:
+            targets = nxt.get(v)
+            if not targets:
+                break
+            w = targets.pop()
+            if not targets:
+                del nxt[v]
+            if w == start:
+                break
+            loop.append(w)
+            v = w
+            if len(loop) > max_loop:
+                break
+        if len(loop) < 3 or len(loop) > max_loop:
+            continue
+        ring = np.asarray(loop)
+        centre = np.asarray(mesh.vertices)[ring].mean(axis=0)
+        vertices.append(centre[None])
+        c = count
+        count += 1
+        for i in range(len(ring)):
+            a, b = ring[i], ring[(i + 1) % len(ring)]
+            new_faces.append((a, b, c))
+    if not new_faces:
+        return mesh
+    out = trimesh.Trimesh(np.concatenate(vertices), np.concatenate([faces, np.asarray(new_faces)]), process=False)
+    out.update_faces(out.nondegenerate_faces())
+    out.remove_unreferenced_vertices()
+    return out
 
 
 def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.05, trim=0.01, smooth=3, faces=200_000,
@@ -302,6 +394,9 @@ def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.05, trim=0.01, 
         largest = max(len(p.faces) for p in parts)
         parts = [p for p in parts if len(p.faces) >= max(0.01 * largest, 50)]
         mesh = trimesh.util.concatenate(parts)
+    if trim > 0:
+        mesh.merge_vertices()
+        mesh = close_holes(mesh)
 
     if smooth > 0:
         stage('smooth', 0.0)
@@ -318,11 +413,12 @@ def poisson_mesh(splats, resolution=256, depth=None, min_alpha=0.05, trim=0.01, 
         largest = max(len(p.faces) for p in parts)
         mesh = trimesh.util.concatenate([p for p in parts if len(p.faces) >= max(0.01 * largest, 50)])
 
-    mesh.fix_normals()
-    orient_outward(mesh)
+    mesh = orient_by_splats(mesh, xyz)
     stage('colour', 0.0)
     k = min(12, len(xyz))
-    distances, nearest = tree.query(mesh.vertices, k=k, workers=-1)
+    offset = COLOUR_OFFSET * float(np.ptp(xyz, axis=0).max())
+    distances, nearest = tree.query(np.asarray(mesh.vertices) + np.asarray(mesh.vertex_normals) * offset, k=k,
+                                    workers=-1)
     if k == 1:
         colours = rgb[nearest]
     else:
@@ -388,6 +484,141 @@ def make_mesh(splats, resolution=256, threshold=0.5, smooth=3, faces=200_000, mi
     return mesh
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Game-ready mesh: low poly + UVs + baked texture
+
+def splat_colours(tree, xyz, rgb, alpha, points, k=12):
+    """Colour at arbitrary points from the nearest splats (opacity / distance^2 weighted), in display sRGB."""
+    k = min(k, len(xyz))
+    distances, nearest = tree.query(points, k=k, workers=-1)
+    if k == 1:
+        return rgb[nearest]
+    weights = alpha[nearest] / (distances + 1e-5) ** 2
+    return (rgb[nearest] * weights[..., None]).sum(axis=1) / weights.sum(axis=1, keepdims=True)
+
+
+def rasterize_uv(uvs, faces, size):
+    """Every texel centre covered by a UV triangle: its (row, col), triangle and barycentrics.
+    UVs are OpenGL style (v up); image row 0 is the top (v = 1)."""
+    P = np.stack([uvs[:, 0] * size, (1.0 - uvs[:, 1]) * size], axis=1)
+    tri = P[faces]                                                         # (F, 3, 2)
+    x0s = np.floor(tri[..., 0].min(axis=1) - 0.5).astype(int).clip(0, size - 1)
+    x1s = np.ceil(tri[..., 0].max(axis=1) - 0.5).astype(int).clip(0, size - 1)
+    y0s = np.floor(tri[..., 1].min(axis=1) - 0.5).astype(int).clip(0, size - 1)
+    y1s = np.ceil(tri[..., 1].max(axis=1) - 0.5).astype(int).clip(0, size - 1)
+    rows, cols, fids, bars = [], [], [], []
+    for f in range(len(faces)):
+        xs, ys = np.meshgrid(np.arange(x0s[f], x1s[f] + 1), np.arange(y0s[f], y1s[f] + 1))
+        xs, ys = xs.ravel(), ys.ravel()
+        px, py = xs + 0.5, ys + 0.5
+        (ax, ay), (bx, by), (cx, cy) = tri[f]
+        det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if abs(det) < 1e-12:
+            continue
+        l0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det
+        l1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det
+        l2 = 1.0 - l0 - l1
+        inside = (l0 >= -1e-6) & (l1 >= -1e-6) & (l2 >= -1e-6)
+        if not inside.any():
+            continue
+        rows.append(ys[inside])
+        cols.append(xs[inside])
+        fids.append(np.full(int(inside.sum()), f))
+        bars.append(np.stack([l0, l1, l2], axis=1)[inside])
+    if not rows:
+        raise ValueError('UV rasterization produced no texels')
+    return np.concatenate(rows), np.concatenate(cols), np.concatenate(fids), np.concatenate(bars)
+
+
+def game_mesh(splats, faces=20_000, texture_size=2048, resolution=256, smooth=3, min_alpha=0.05, trim=0.01,
+              progress=None):
+    """Low-poly, UV-unwrapped mesh with the splat colours baked into a texture.
+    Returns (vertices, faces, normals, uvs, texture image) in the PLY frame."""
+    import trimesh
+    import xatlas
+    from PIL import Image
+    from scipy.ndimage import distance_transform_edt
+    from scipy.spatial import cKDTree
+
+    stage = progress or (lambda *_: None)
+    faces = max(int(faces or 20_000), 500)
+    high = poisson_mesh(splats, resolution=resolution, min_alpha=min_alpha, trim=trim, smooth=smooth,
+                        faces=max(faces * 4, 100_000), progress=progress)
+    stage('simplify', 0.0)
+    low = high.simplify_quadric_decimation(face_count=faces) if len(high.faces) > faces else high.copy()
+    parts = low.split(only_watertight=False)
+    if len(parts) > 1:
+        largest = max(len(p.faces) for p in parts)
+        low = trimesh.util.concatenate([p for p in parts if len(p.faces) >= max(0.01 * largest, 20)])
+    low.merge_vertices()
+    keep_mask = splats.alpha >= min_alpha
+    low = orient_by_splats(low, splats.xyz[keep_mask])
+    normals = np.asarray(low.vertex_normals, dtype=np.float64)
+
+    stage('unwrap', 0.0)
+    vmap, tris, uvs = xatlas.parametrize(np.asarray(low.vertices, np.float32), np.asarray(low.faces, np.uint32))
+    verts, norms = np.asarray(low.vertices, dtype=np.float64)[vmap], normals[vmap]
+
+    stage('bake', 0.0)
+    keep = splats.alpha >= min_alpha
+    xyz, rgb, alpha = splats.xyz[keep], splats.rgb[keep], splats.alpha[keep]
+    tree = cKDTree(xyz)
+    size = int(texture_size)
+    rows, cols, fids, bars = rasterize_uv(uvs, tris, size)
+    points = np.einsum('tk,tkj->tj', bars, verts[tris[fids]])
+    # The low-poly surface cuts inside curved areas (a flat triangle across a dome), where the nearest splats
+    # are the darker interior ones. Lift each texel along its normal onto the full-detail surface first.
+    texel_normals = np.einsum('tk,tkj->tj', bars, norms[tris[fids]])
+    texel_normals /= np.maximum(np.linalg.norm(texel_normals, axis=1, keepdims=True), 1e-9)
+    high_vertices = np.asarray(high.vertices)
+    high_tree = cKDTree(high_vertices)
+    for start in range(0, len(points), 1_000_000):
+        sl = slice(start, start + 1_000_000)
+        idx = high_tree.query(points[sl], workers=-1)[1]
+        lift = np.einsum('ij,ij->i', high_vertices[idx] - points[sl], texel_normals[sl])
+        points[sl] += texel_normals[sl] * (lift[:, None] + COLOUR_OFFSET * float(np.ptp(xyz, axis=0).max()))
+    image = np.zeros((size, size, 3), dtype=np.float32)
+    chunk = 1_000_000
+    for start in range(0, len(points), chunk):
+        sl = slice(start, start + chunk)
+        image[rows[sl], cols[sl]] = splat_colours(tree, xyz, rgb, alpha, points[sl])
+        stage('bake', min(1.0, (start + chunk) / len(points)))
+    mask = np.zeros((size, size), dtype=bool)
+    mask[rows, cols] = True
+    # Fill every empty texel with the nearest baked one: no dark seams at island edges or in mipmaps.
+    nearest = distance_transform_edt(~mask, return_distances=False, return_indices=True)
+    image = image[nearest[0], nearest[1]]
+    texture = Image.fromarray((np.clip(image, 0, 1) * 255 + 0.5).astype(np.uint8), 'RGB')
+    return verts, tris.astype(np.int64), norms, uvs.astype(np.float64), texture
+
+
+def orient_arrays(v, n, height=None):
+    """The y-up transform of orient_mesh, for vertices and normals."""
+    v, n = upright(v), upright(n)
+    for a in (0, 2):
+        v[:, a] -= (v[:, a].min() + v[:, a].max()) / 2
+    v[:, 1] -= v[:, 1].min()
+    if height:
+        v *= float(height) / max(v[:, 1].max(), 1e-9)
+    return v, n
+
+
+def write_game_glb(splats, path, faces=20_000, texture_size=2048, height=None, progress=None, **kw):
+    import trimesh
+    from trimesh.visual.material import PBRMaterial
+    from trimesh.visual.texture import TextureVisuals
+    verts, tris, norms, uvs, texture = game_mesh(splats, faces=faces, texture_size=texture_size, progress=progress,
+                                                 **kw)
+    verts, norms = orient_arrays(verts, norms, height)
+    # The texture is display sRGB, which is what glTF expects for baseColorTexture (no conversion needed).
+    material = PBRMaterial(baseColorTexture=texture, baseColorFactor=[1.0, 1.0, 1.0, 1.0], metallicFactor=0.0,
+                           roughnessFactor=0.9)
+    mesh = trimesh.Trimesh(verts, tris, vertex_normals=norms, visual=TextureVisuals(uv=uvs, material=material),
+                           process=False)
+    mesh.export(path, file_type='glb', include_normals=True)
+    return mesh
+
+
 def orient_mesh(mesh, fmt, height=None):
     """y-up for glb / obj / mesh-ply, z-up for stl; optionally scale so the object is `height` units tall."""
     v = upright(mesh.vertices)  # y-up
@@ -414,7 +645,7 @@ def orient_mesh(mesh, fmt, height=None):
 # ---------------------------------------------------------------------------------------------------------------
 
 def export(ply_path, fmt, out_path=None, resolution=256, threshold=0.5, smooth=3, faces=200_000, height=None,
-           method='poisson', min_alpha=0.05, trim=0.01, progress=None):
+           method='poisson', min_alpha=0.05, trim=0.01, texture_size=2048, game_faces=20_000, progress=None):
     """Export `ply_path` to `fmt`. Returns a dict with the output path and some stats."""
     fmt = fmt.lower()
     if fmt not in FORMATS:
@@ -429,7 +660,14 @@ def export(ply_path, fmt, out_path=None, resolution=256, threshold=0.5, smooth=3
     else:
         splats = read_ply(ply_path)
         info['splats'] = splats.count
-        if fmt == 'spz':
+        if fmt == 'game-glb':
+            size = int(texture_size or 2048)
+            mesh = write_game_glb(splats, out_path, faces=int(game_faces or 20_000), texture_size=size,
+                                  height=height, progress=progress, resolution=int(resolution), smooth=int(smooth),
+                                  min_alpha=min_alpha, trim=trim)
+            info.update(vertices=int(len(mesh.vertices)), faces=int(len(mesh.faces)), texture_size=size,
+                        size=[float(x) for x in mesh.extents])
+        elif fmt == 'spz':
             write_spz(splats, out_path)
         elif fmt == 'splat':
             write_splat(splats, out_path)
@@ -474,9 +712,12 @@ if __name__ == '__main__':
     parser.add_argument('--method', choices=['poisson', 'density'], default='poisson')
     parser.add_argument('--min-alpha', type=float, default=0.05)
     parser.add_argument('--trim', type=float, default=0.01)
+    parser.add_argument('--texture-size', type=int, default=2048)
+    parser.add_argument('--game-faces', type=int, default=20_000)
     a = parser.parse_args()
     fmt = a.format or next((f for f, ext in EXTENSIONS.items() if a.out.lower().endswith(ext) and f != 'ply'),
                            os.path.splitext(a.out)[1][1:])
     print(json.dumps(export(a.ply, fmt, a.out, resolution=a.resolution, threshold=a.threshold, smooth=a.smooth,
                             faces=a.faces, height=a.height, method=a.method, min_alpha=a.min_alpha, trim=a.trim,
+                            texture_size=a.texture_size, game_faces=a.game_faces,
                             progress=lambda s, f: None)))
